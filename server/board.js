@@ -62,6 +62,27 @@ export const vehicleText = (v) => [v?.year, v?.model || v?.make].filter(Boolean)
 export const personName = (e) => (e ? `${e.firstName ?? ''} ${(e.lastName ?? '').slice(0, 1)}.`.trim() : '');
 const initials = (e) => `${(e.firstName ?? ' ')[0]}${(e.lastName ?? ' ')[0]}`.toUpperCase();
 
+// The shop's service advisors: the names in settings.advisors for this location, matched to Tekmetric
+// employees by first name (exact, else the first 3 letters, e.g. Nick = Nicholas). Without a list for the
+// location, everyone who isn't set up to do work.
+async function pickAdvisors(client, shopId, employees) {
+  const active = employees.filter((e) => !e.disabled);
+  const shop = (await client.getShops()).find((x) => x.id === Number(shopId));
+  const label = lc([settings.shopNames[shopId], shop?.nickname, shop?.name].filter(Boolean).join(' '));
+  const names = Object.entries(settings.advisors ?? {}).find(([loc]) => label.includes(lc(loc)))?.[1];
+  if (!names) return { list: active.filter((e) => !e.canPerformWork), missing: [] };
+  const first = (e) => lc(e.firstName).trim();
+  const list = []; const missing = [];
+  for (const n of names) {
+    const want = lc(n);
+    const pool = [active.filter((e) => !e.canPerformWork), active];
+    const hit = pool.map((p) => p.find((e) => first(e) === want)).find(Boolean)
+      ?? pool.map((p) => p.find((e) => first(e).slice(0, 3) === want.slice(0, 3))).find(Boolean);
+    if (hit && !list.includes(hit)) list.push(hit); else if (!hit) missing.push(n);
+  }
+  return { list, missing };
+}
+
 export async function buildBoard(client, { shopId, date, now = new Date(), store = null, capacityOverrides = {} }) {
   const today = localDate(now, TZ);
   const dayStart = zonedTime(date, 0, 0, TZ).toISOString();
@@ -297,7 +318,7 @@ export async function buildBoard(client, { shopId, date, now = new Date(), store
   // ---- Day – Service Advisor view: one column per advisor ----
   // Today's customers on a timeline at their drop-off / waiter time, one card per RO or appointment,
   // plus each advisor's ROs waiting on authorization.
-  const advisors = employees.filter((e) => !e.disabled && !e.canPerformWork && techSettings.get(e.id)?.show !== false);
+  const { list: advisors, missing: advisorsMissing } = await pickAdvisors(client, shopId, employees);
   const advCols = new Map([['unassigned', { id: 'unassigned', type: 'unassigned', name: 'Unassigned', cards: [], waiting: [] }]]);
   for (const e of advisors) advCols.set(e.id, { id: e.id, type: 'advisor', name: personName(e), initials: initials(e), cards: [], waiting: [] });
   const advCol = (id) => {
@@ -331,7 +352,7 @@ export async function buildBoard(client, { shopId, date, now = new Date(), store
     c.waiting.sort((x, y) => String(x.since).localeCompare(String(y.since)));
     Object.assign(c, { appts: c.cards.length, waiters: c.cards.filter((k) => k.waiter).length, notArrived: c.cards.filter((k) => k.kind === 'appt' && k.state === 'notArrived').length });
   }
-  const advisorView = { columns: [...advCols.values()].filter((c) => c.type === 'unassigned' || c.cards.length || c.waiting.length || advisors.some((e) => e.id === c.id)) };
+  const advisorView = { missing: advisorsMissing, columns: [...advCols.values()].filter((c) => c.type === 'unassigned' || c.cards.length || c.waiting.length || advisors.some((e) => e.id === c.id)) };
 
   return {
     advisorView,

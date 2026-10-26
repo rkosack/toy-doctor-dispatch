@@ -20,8 +20,8 @@ const SHOPS = [
   { id: 102, name: 'Toy Doctor Littleton', nickname: 'Littleton', address: { city: 'Littleton', state: 'CO' }, roCustomLabelEnabled: true },
 ];
 const STAFF = {
-  101: { techs: ['Marcus Reyes', 'Jordan Tate', 'Tyler Brooks', 'Andre Moss', 'Sam Kline', 'Luis Pena'], advisors: ['Erin Walsh', 'Chris Dunn'] },
-  102: { techs: ['Nate Ortiz', 'Kyle Bauer', 'Devin Shaw', 'Ray Lindqvist', 'Omar Haddad'], advisors: ['Paige Rowe', 'Ben Cole'] },
+  101: { techs: ['Marcus Reyes', 'Jordan Tate', 'Tyler Brooks', 'Andre Moss', 'Sam Kline', 'Luis Pena'], advisors: ['Cody Hale', 'Chrissy Vega', 'Nicholas Ross', 'Pat Owner'] },
+  102: { techs: ['Nate Ortiz', 'Kyle Bauer', 'Devin Shaw', 'Ray Lindqvist', 'Omar Haddad'], advisors: ['Jon Park', 'Charlie Webb'] },
 };
 const LAST = ['Nguyen', 'Brooks', 'Allen', 'Kim', 'Lopez', 'Walsh', 'Garcia', 'Reed', 'Ortiz', 'Chen', 'Davis', 'Murphy', 'Foster', 'Ito', 'Young', 'Patel', 'Hernandez', 'Price', 'Bennett', 'Sato', 'Morales', 'Hughes', 'Fischer', 'Ramos', 'Coleman', 'Tanaka', 'Novak', 'Grant', 'Shah', 'Lindgren'];
 const FIRST = ['Ana', 'Ben', 'Carla', 'Dan', 'Eli', 'Fay', 'Gus', 'Hana', 'Ivan', 'June', 'Kurt', 'Lena', 'Mo', 'Nia', 'Owen', 'Pam'];

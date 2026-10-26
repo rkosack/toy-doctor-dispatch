@@ -28,6 +28,13 @@ export const settings = {
   // Example: { 1234: 'Denver', 5678: 'Littleton' }
   shopNames: {},
 
+  // Day – Service Advisor columns, by location (matched to the Tekmetric location name) and first name.
+  // Anyone else set as an RO's service writer still gets a column for that RO.
+  advisors: {
+    Denver: ['Cody', 'Chrissy', 'Nick'],
+    Littleton: ['Jon', 'Charlie'],
+  },
+
   // RO label rules: Toy Doctor's Tekmetric labels, exactly as named in Tekmetric.
   // Matching ignores capitals, spaces and punctuation ("Work In Progress 25%" = "work in progress 25").
   // A label not listed here counts only if the RO is promised today (or the customer hasn't arrived yet).
@@ -41,8 +48,9 @@ export const settings = {
     // finished work
     done: ['Complete-In QC'],
     // Day – Service Advisor view: ROs waiting on the customer's OK (listed under each advisor)
-    authorization: ['Pending Authorization', 'Estimating'],
+    authorization: ['Pending Authorization', 'Estimating', 'NEEDS DEPOSIT'],
     // everything else (Estimating, Pending Authorization, *MAIN CONCERN IN*, NEEDS DEPOSIT, Warranty_)
+    // (authorization, above, only decides who shows under "Waiting on authorization")
     // waits on the customer or the shop: not counted
   },
 };
