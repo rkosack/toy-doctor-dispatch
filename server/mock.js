@@ -31,6 +31,11 @@ const CARS = [['Toyota', '4Runner'], ['Toyota', 'Tundra'], ['Toyota', 'Camry'], 
 const COLORS = { red: '#D50000', yellow: '#F6BF26', blue: '#039BE5', green: '#33B679', purple: '#8E24AA', navy: '#0D4A80' };
 const NAMED = { red: '#D50000', pink: '#E67C73', yellow: '#F6BF26', orange: '#F4511E', 'light green': '#7CB342', green: '#33B679', blue: '#039BE5', navy: '#0D4A80', lavender: '#7986CB', purple: '#8E24AA' };
 // what Tekmetric does with an appointment write: color names become hex, "status" becomes appointmentStatus
+// Tekmetric's rule (seen in the sandbox): a ride option needs both drop-off and pick-up times
+const checkRide = (body, cur = {}) => {
+  const m = { ...cur, ...body };
+  if (body.rideOption && (!m.dropoffTime || !m.pickupTime)) throw new Error('Tekmetric POST /api/v1/appointments failed (400): {"type":"ERROR","message":"Appointment invalid","data":null,"details":{"rideOption":"Drop-off and Pick-up times are required when ride option is provided."}}');
+};
 const fromBody = ({ color, status, ...rest }) => ({ ...rest, ...(color ? { color: NAMED[color] ?? color } : {}), ...(status ? { appointmentStatus: status } : {}) });
 const WORK = {
   red: [['Trans shudder diag', 3], ['No-start diag + repair', 4], ['Head gasket', 5], ['Timing belt + water pump', 4.5]],
@@ -195,9 +200,10 @@ export function createMockClient() {
     },
     patchLog: () => ({ ro: [...patches.ro], job: [...patches.job], events: [...events.values()] }),
     // appointments and custom events created through the API
-    createAppointment: async (body) => { const id = 9_000_000 + events.size + 1 + Math.floor(Math.random() * 1000) * 1000; events.set(id, { id, customerId: null, vehicleId: null, appointmentStatus: 'NONE', deletedDate: null, color: NAMED.navy, ...fromBody(body), shopId: body.shopId }); return { type: 'SUCCESS', message: 'Appointment Saved', data: id }; },
+    createAppointment: async (body) => { checkRide(body); const id = 9_000_000 + events.size + 1 + Math.floor(Math.random() * 1000) * 1000; events.set(id, { id, customerId: null, vehicleId: null, appointmentStatus: 'NONE', deletedDate: null, color: NAMED.navy, ...fromBody(body), shopId: body.shopId }); return { type: 'SUCCESS', message: 'Appointment Saved', data: id }; },
     patchAppointment: async (id, body) => {
       id = Number(id);
+      checkRide(body);
       if (events.has(id)) { Object.assign(events.get(id), fromBody(body)); return { type: 'SUCCESS', data: id }; }
       const a = [...pools.values()].flatMap((p) => p.appts).find((x) => x.id === id);
       if (!a) throw new Error('Tekmetric PATCH /api/v1/appointments failed (404)');

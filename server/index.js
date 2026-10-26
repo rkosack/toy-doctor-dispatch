@@ -160,7 +160,8 @@ const userErrors = (fn) => async (req, res, next) => {
     const tek = /^Tekmetric \w+ \S+ failed \((\d+)\): ?(.*)$/s.exec(e.message ?? '');
     if (tek && tek[1].startsWith('4')) {
       console.error(e.message);
-      let why = tek[2]; try { why = JSON.parse(tek[2]).message || why; } catch { /* plain text */ }
+      let why = tek[2];
+      try { const j = JSON.parse(tek[2]); why = Object.values(j.details ?? {}).filter((v) => typeof v === 'string').join(' ') || j.message || why; } catch { /* plain text */ }
       return res.status(502).json({ error: `Tekmetric didn't accept that change${why ? `: ${String(why).slice(0, 140)}` : '.'}` });
     }
     next(e);

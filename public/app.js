@@ -586,6 +586,9 @@ function openBook(pre = {}) {
       <label>Drop-off <span class="muted">(optional)</span><input type="time" name="drop" step="900"></label>
     </div>
     <div class="row3">
+      <label>Pick-up <span class="muted" data-pickreq>(optional)</span><input type="time" name="pick" step="900"></label>
+    </div>
+    <div class="row3">
       <label>Est. hours<input type="number" name="hours" min="0.1" max="24" step="0.1" value="1.0"></label>
       <label style="grid-column:span 2">Technician<select name="tech">${techOpts(state.date)}</select></label>
     </div>
@@ -606,6 +609,11 @@ function openBook(pre = {}) {
   form.hours.addEventListener('input', () => { hoursTouched = true; });
   form.addEventListener('change', (e) => {
     if (e.target.name === 'category' && !hoursTouched) form.hours.value = KIND_HOURS[e.target.value].toFixed(1);
+    if (e.target.name === 'ride') {
+      const need = e.target.value !== 'NONE';
+      dlg.querySelector('[data-pickreq]').textContent = need ? '(required)' : '(optional)';
+      if (need && !form.pick.value) form.pick.value = '17:00';
+    }
     if (e.target.name === 'date') { const keep = form.tech.value; form.tech.innerHTML = techOpts(e.target.value); form.tech.value = keep; }
   });
   q.addEventListener('input', () => {
@@ -644,10 +652,12 @@ function openBook(pre = {}) {
     if (!vehicle) return toast('Pick a vehicle.', true);
     const start = fromHM(f.get('time')); const drop = fromHM(f.get('drop'));
     if (drop != null && drop > start) return toast('Drop-off should be at or before the appointment time.', true);
+    const pick = fromHM(f.get('pick'));
+    if (f.get('ride') !== 'NONE' && pick == null) return toast('Add a pick-up time for the loaner or ride.', true);
     const body = {
       shopId: state.shopId, customerId: customer.id, vehicleId: vehicle.id, title: `${customer.lastName} – ${vehicle.model}`,
       category: f.get('category'), concern: f.get('concern'), date: f.get('date'), startHour: start, dropHour: drop,
-      hours: Number(f.get('hours')), techId: f.get('tech') || null, rideOption: f.get('ride'),
+      hours: Number(f.get('hours')), techId: f.get('tech') || null, rideOption: f.get('ride'), pickupHour: pick,
     };
     const btn = form.querySelector('[type=submit]'); btn.disabled = true; btn.textContent = 'Booking…';
     try {
@@ -674,7 +684,7 @@ function toast(msg, isError, action) {
     b.addEventListener('click', () => { t.remove(); action.fn(); });
     t.appendChild(b);
   }
-  document.body.appendChild(t);
+  (document.querySelector('dialog[open]') ?? document.body).appendChild(t); // above an open window, not hidden behind it
   setTimeout(() => t.remove(), action ? 9000 : 5000);
 }
 

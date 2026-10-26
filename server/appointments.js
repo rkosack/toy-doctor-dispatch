@@ -14,7 +14,6 @@ import { addDays, localDate, localHours, zonedTime } from './time.js';
 const TZ = settings.timeZone;
 export const COLOR_NAMES = ['red', 'pink', 'yellow', 'orange', 'light green', 'green', 'blue', 'navy', 'lavender', 'purple'];
 const STATUSES = ['NONE', 'ARRIVED', 'NO_SHOW', 'CANCELED'];
-const RIDES = ['NONE', 'LOANER', 'RIDE'];
 // Board categories → Tekmetric color names (Toy Doctor's color code)
 export const CATEGORY_COLOR = { red: 'red', yellow: 'yellow', blue: 'blue', green: 'green', purple: 'purple' };
 // Starting estimate for each kind of work, used when booking
@@ -58,7 +57,7 @@ export function updateBody(appt, changes, palette) {
     color: colorName(appt.color, palette) ?? undefined,
     dropoffTime: appt.dropoffTime ?? undefined,
     pickupTime: appt.pickupTime ?? undefined,
-    rideOption: RIDES.includes(code(appt.rideOption)) ? code(appt.rideOption) : undefined,
+    rideOption: ['LOANER', 'RIDE'].includes(code(appt.rideOption)) && appt.dropoffTime && appt.pickupTime ? code(appt.rideOption) : undefined,
     status: STATUSES.includes(code(appt.appointmentStatus)) ? code(appt.appointmentStatus) : undefined,
     leadSource: typeof appt.leadSource === 'string' && appt.leadSource ? appt.leadSource : undefined,
     ...changes,
@@ -142,14 +141,20 @@ export async function bookAppointment(ctx, input) {
   const hours = clamp(Number(input.hours) || CATEGORY_HOURS[category], 0.1, 24);
   const concern = String(input.concern ?? '').trim().slice(0, 500);
   if (!concern) throw new UserError('Add the concern or work requested.');
-  const ride = RIDES.includes(input.rideOption) ? input.rideOption : 'NONE';
+  // Tekmetric wants drop-off and pick-up times whenever a ride option is sent, so "None" sends nothing
+  const ride = ['LOANER', 'RIDE'].includes(input.rideOption) ? input.rideOption : null;
+  const pickHour = input.pickupHour == null || input.pickupHour === '' ? null : quarter(input.pickupHour);
+  if (ride && pickHour == null) throw new UserError('Add a pick-up time for the loaner or ride.');
+  if (pickHour != null && !(pickHour > (dropHour ?? startHour) && pickHour <= 22)) throw new UserError('Pick-up should be after drop-off.');
 
   const body = {
     shopId, customerId: Number(input.customerId), vehicleId: Number(input.vehicleId),
     startTime: at(input.date, startHour), endTime: at(input.date, startHour + 0.5),
     title: String(input.title ?? '').trim().slice(0, 80) || 'Appointment',
-    description: concern, color: CATEGORY_COLOR[category], rideOption: ride,
+    description: concern, color: CATEGORY_COLOR[category],
     ...(dropHour != null && dropHour < startHour ? { dropoffTime: at(input.date, dropHour) } : {}),
+    ...(pickHour != null ? { pickupTime: at(input.date, pickHour) } : {}),
+    ...(ride ? { rideOption: ride, dropoffTime: at(input.date, dropHour ?? startHour) } : {}),
   };
   const res = await client.createAppointment(body);
   const id = Number(res?.data);
@@ -189,7 +194,12 @@ export async function changeAppointment(ctx, id, input) {
     changes.endTime = iso(start + length);
     // drop-off and pick-up move with the appointment
     if (appt.dropoffTime) changes.dropoffTime = iso(new Date(appt.dropoffTime).getTime() + shift);
-    if (appt.pickupTime) changes.pickupTime = iso(new Date(appt.pickupTime).getTime() + shift);
+    // pick-up keeps its time of day on the new date (e.g. 5:00), unless that's no longer after the appointment
+    if (appt.pickupTime) {
+      const ph = localHours(new Date(appt.pickupTime), TZ);
+      const same = zonedTime(newDate, Math.floor(ph), Math.round((ph % 1) * 60), TZ).getTime();
+      changes.pickupTime = iso(same > start ? same : new Date(appt.pickupTime).getTime() + shift);
+    }
     if (input.dropHour !== undefined) {
       const d = input.dropHour == null || input.dropHour === '' ? null : quarter(input.dropHour);
       if (d != null && !(d >= 5 && d <= startHour)) throw new UserError('Drop-off should be at or before the appointment time.');
