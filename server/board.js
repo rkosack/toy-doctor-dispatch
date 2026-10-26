@@ -1,0 +1,310 @@
+// Builds the Day – Technician board for one shop and one date from Tekmetric data.
+// All business rules from the build spec live here.
+
+import { settings } from './config.js';
+import { addDays, localDate, localHours, payPeriod, weekday, workDaysBetween, zonedTime } from './time.js';
+import { syncAssignments } from './sync.js';
+import { availableHours } from './availability.js';
+
+const TZ = settings.timeZone;
+const DEFAULT_APPT_HOURS = 1; // estimate for a booked appointment until the booking panel stores one
+const round1 = (n) => Math.round(n * 10) / 10;
+const lc = (s) => (s ?? '').toLowerCase();
+const matches = (text, list) => list.some((w) => lc(text).includes(w));
+
+// ---- colors: Tekmetric appointment hex → our five categories ----
+export function colorCategory(hex) {
+  if (!hex || !/^#?[0-9a-f]{6}$/i.test(hex)) return 'other';
+  const n = parseInt(hex.replace('#', ''), 16);
+  const r = (n >> 16) / 255, g = ((n >> 8) & 255) / 255, b = (n & 255) / 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), l = (max + min) / 2, d = max - min;
+  if (d < 0.08) return 'other'; // gray
+  const s = d / (1 - Math.abs(2 * l - 1));
+  if (l < 0.3 && s < 0.9) return 'other'; // navy = Tekmetric's default, i.e. not categorized
+  let h = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  h = (h * 60 + 360) % 360;
+  if (h < 15 || h >= 330) return 'red';
+  if (h < 70) return 'yellow';
+  if (h < 170) return 'green';
+  if (h < 228) return 'blue';
+  return 'purple';
+}
+
+// ---- RO state from its labels ----
+function roLabel(ro) {
+  return ro.repairOrderCustomLabel?.name || ro.repairOrderLabel?.name || ro.repairOrderStatus?.name || '';
+}
+const norm = (s) => lc(s).replace(/[^a-z0-9]/g, '');
+const RULES = Object.fromEntries(Object.entries(settings.labelRules).map(([k, list]) => [k, new Set(list.map(norm))]));
+function roState(ro) {
+  const statusId = ro.repairOrderStatus?.id;
+  if ([3, 5, 6].includes(statusId) || ro.completedDate) return 'done';
+  for (const text of [ro.repairOrderCustomLabel?.name, ro.repairOrderLabel?.name]) {
+    const n = norm(text);
+    if (!n) continue;
+    if (RULES.active.has(n)) return 'active';
+    if (RULES.partsHold.has(n)) return 'parts';
+    if (RULES.offsite.has(n)) return 'offsite';
+    if (RULES.done.has(n)) return 'done';
+  }
+  return 'pending';
+}
+
+// When the car is due in: Tekmetric's drop-off time if set (and on that day), else the appointment time.
+function dropHour(appt, date) {
+  const t = appt.dropoffTime && localDate(new Date(appt.dropoffTime), TZ) === date ? appt.dropoffTime : appt.startTime;
+  return localHours(new Date(t), TZ);
+}
+
+const vehicleText = (v) => [v?.year, v?.model || v?.make].filter(Boolean).join(' ');
+const personName = (e) => (e ? `${e.firstName ?? ''} ${(e.lastName ?? '').slice(0, 1)}.`.trim() : '');
+const initials = (e) => `${(e.firstName ?? ' ')[0]}${(e.lastName ?? ' ')[0]}`.toUpperCase();
+
+export async function buildBoard(client, { shopId, date, now = new Date(), store = null, capacityOverrides = {} }) {
+  const today = localDate(now, TZ);
+  const dayStart = zonedTime(date, 0, 0, TZ).toISOString();
+  const dayEnd = new Date(zonedTime(addDays(date, 1), 0, 0, TZ).getTime() - 1000).toISOString();
+  const mon = addDays(date, -((weekday(date) + 6) % 7));
+  const weekStart = zonedTime(mon, 0, 0, TZ).toISOString();
+  const weekEnd = new Date(zonedTime(addDays(mon, 7), 0, 0, TZ).getTime() - 1000).toISOString();
+  const period = payPeriod(date);
+  const periodStart = zonedTime(period.start, 0, 0, TZ).toISOString();
+
+  const [employees, weekAppts, wip, touched, closedInPeriod] = await Promise.all([
+    client.getEmployees(shopId),
+    client.getAppointments(shopId, weekStart, weekEnd),
+    // open ROs: estimates (1) and work in progress (2), incl. ones written up the night before
+    Promise.all([1, 2].map((st) => client.getRepairOrders(shopId, { repairOrderStatusId: String(st) }))).then((a) => a.flat()),
+    client.getRepairOrders(shopId, { updatedDateStart: dayStart }),
+    Promise.all([3, 5, 6].map((s) => client.getRepairOrders(shopId, { repairOrderStatusId: String(s), updatedDateStart: periodStart }))).then((a) => a.flat()),
+  ]);
+
+  const empById = new Map(employees.map((e) => [e.id, e]));
+  const allTechs = employees.filter((e) => e.canPerformWork && !e.disabled);
+  const [techSettings, availability] = store
+    ? await Promise.all([store.getTechSettings(shopId), store.getAvailability(shopId, date)])
+    : [new Map(), new Map()];
+  const techs = allTechs.filter((t) => techSettings.get(t.id)?.show !== false); // "Manage techs" can hide people
+  const live = (a) => !a.deletedDate && !['CANCELED', 'CANCELLED', 'NO_SHOW'].includes(a.appointmentStatus);
+  const dayAppts = weekAppts.filter((a) => live(a) && localDate(new Date(a.startTime), TZ) === date);
+  const apptById = new Map(weekAppts.map((a) => [a.id, a]));
+
+  // ---- ROs that belong on this day ----
+  const roById = new Map();
+  for (const ro of [...wip, ...touched]) if (!ro.deletedDate) roById.set(ro.id, ro);
+  const dayApptIds = new Set(dayAppts.map((a) => a.id));
+  const isToday = date === today;
+  const dayROs = [...roById.values()].filter((ro) =>
+    dayApptIds.has(ro.appointmentId) ||
+    (ro.completedDate && localDate(new Date(ro.completedDate), TZ) === date) ||
+    (isToday && ro.repairOrderStatus?.id === 2 && !(apptById.get(ro.appointmentId) && localDate(new Date(apptById.get(ro.appointmentId).startTime), TZ) > date)) ||
+    (date < today && ro.repairOrderStatus?.id === 2 && localDate(new Date(ro.createdDate), TZ) <= date)
+  );
+  const linked = new Set(dayROs.map((ro) => ro.appointmentId).filter(Boolean));
+
+  // ---- booked tech → RO, once the RO is open (fills blanks only) ----
+  const synced = store ? await syncAssignments({ client, store, shopId, ros: dayROs }) : [];
+  const assignments = store ? await store.getAssignments(shopId, dayAppts.filter((a) => !linked.has(a.id)).map((a) => a.id)) : new Map();
+
+  // ---- names (customers, vehicles): from cache; anything missing loads in the background ----
+  const custIds = new Set(); const vehIds = new Set();
+  for (const x of [...dayROs, ...dayAppts]) { if (x.customerId) custIds.add(x.customerId); if (x.vehicleId) vehIds.add(x.vehicleId); }
+  const custById = new Map(); const vehById = new Map();
+  const missingC = []; const missingV = [];
+  for (const id of custIds) { const c = client.peekCustomer(id); c ? custById.set(id, c) : missingC.push(id); }
+  for (const id of vehIds) { const v = client.peekVehicle(id); v ? vehById.set(id, v) : missingV.push(id); }
+  if (missingC.length || missingV.length) client.warmNames(missingC, missingV);
+  const namesPending = missingC.length + missingV.length;
+  const who = (x) => {
+    const c = custById.get(x.customerId);
+    return { customer: c ? (c.lastName || c.firstName || 'Customer') : 'Loading name…', vehicle: vehicleText(vehById.get(x.vehicleId)) || (vehById.has(x.vehicleId) ? '' : 'vehicle…') };
+  };
+
+  // ---- columns ----
+  const columns = new Map();
+  columns.set('unassigned', { id: 'unassigned', type: 'unassigned', name: 'Unassigned', cards: [], parked: [] });
+  for (const t of techs) columns.set(t.id, { id: t.id, type: 'tech', name: personName(t), initials: initials(t), cards: [], parked: [] });
+  const col = (techId) => {
+    if (columns.has(techId)) return columns.get(techId);
+    const e = allTechs.find((t) => t.id === techId); // hidden from the board but has work today: show them anyway
+    if (e) { columns.set(e.id, { id: e.id, type: 'tech', name: personName(e), initials: initials(e), cards: [], parked: [], hiddenTech: true }); return columns.get(e.id); }
+    return columns.get('unassigned');
+  };
+
+  // ---- RO cards: one per tech with sold jobs on the RO ----
+  for (const ro of dayROs) {
+    const appt = ro.appointmentId ? apptById.get(ro.appointmentId) : null;
+    const apptToday = appt && localDate(new Date(appt.startTime), TZ) === date;
+    const state = roState(ro);
+    const label = roLabel(ro);
+    const promisedToday = ro.customerTimeOut && localDate(new Date(ro.customerTimeOut), TZ) === date;
+    const live = (ro.jobs ?? []).filter((j) => !j.archived);
+    const sold = live.filter((j) => j.authorized !== false);
+    // Written up ahead of time but not sold yet: plan with the estimated job hours.
+    const estimated = sold.length === 0 && live.length > 0;
+    const planned = estimated ? live : sold;
+    const notArrived = apptToday && appt.arrived !== true && appt.appointmentStatus !== 'ARRIVED' && state !== 'done';
+    const byTech = new Map();
+    for (const j of planned) {
+      const t = j.technicianId ?? ro.technicianId ?? 'unassigned';
+      const g = byTech.get(t) ?? { hours: 0, jobs: [] };
+      g.hours += Number(j.laborHours) || 0; g.jobs.push(j.name);
+      byTech.set(t, g);
+    }
+    if (byTech.size === 0) byTech.set(ro.technicianId ?? 'unassigned', { hours: 0, jobs: ['Estimate – not yet sold'] });
+    const techIds = [...byTech.keys()];
+    for (const [techId, g] of byTech) {
+      // Counts: active work, work promised today, or a booked customer who hasn't arrived yet
+      // (assumed promised today, same as a booked appointment with no RO).
+      const counts = state === 'active' || (promisedToday && state === 'pending') || (notArrived && state === 'pending');
+      const card = {
+        key: `ro-${ro.id}-${techId}`, kind: 'ro', roId: ro.id, roNumber: ro.repairOrderNumber,
+        category: colorCategory(appt?.color), waiter: appt?.appointmentOption?.code === 'STAY',
+        ...who(ro), work: g.jobs.join(', '), hours: round1(g.hours), hoursEstimated: estimated,
+        label: notArrived ? `${label} · not arrived` : label, state, counts: Boolean(counts), promisedToday: Boolean(promisedToday),
+        startHour: apptToday ? localHours(new Date(appt.startTime), TZ) : null,
+        dropHour: apptToday ? dropHour(appt, date) : null,
+        alsoOn: techIds.filter((t) => t !== techId).map((t) => personName(empById.get(t)) || 'Unassigned'),
+        advisor: personName(empById.get(ro.serviceWriterId)),
+        assignedTechId: techId === 'unassigned' ? null : techId,
+      };
+      if (state === 'parts' || state === 'offsite') col(techId).parked.push(card);
+      else col(techId).cards.push(card);
+    }
+  }
+
+  // ---- booked appointments with no RO yet ----
+  const nowMs = now.getTime();
+  const events = [];
+  const noShows = [];
+  for (const a of dayAppts) {
+    if (linked.has(a.id)) continue;
+    if (!a.customerId) { events.push({ id: a.id, title: a.title, startHour: localHours(new Date(a.startTime), TZ), endHour: localHours(new Date(a.endTime), TZ) }); continue; }
+    const start = new Date(a.startTime).getTime();
+    const arrived = a.arrived === true || a.appointmentStatus === 'ARRIVED';
+    const noShow = isToday && !arrived && nowMs > start + settings.noShowGraceMinutes * 60_000;
+    const assigned = assignments.get(a.id);
+    const techCol = assigned && columns.get(assigned.techId);
+    const card = {
+      key: `appt-${a.id}`, kind: 'appt', appointmentId: a.id, category: colorCategory(a.color), waiter: a.appointmentOption?.code === 'STAY',
+      ...who(a), work: a.description || a.title || '', hours: assigned?.hours ?? DEFAULT_APPT_HOURS, hoursEstimated: true,
+      label: arrived ? 'Arrived' : 'Not arrived', state: arrived ? 'arrived' : 'notArrived', counts: true, noShow,
+      startHour: localHours(new Date(a.startTime), TZ), dropHour: dropHour(a, date), alsoOn: [],
+      assignedTechId: techCol ? assigned.techId : null,
+    };
+    (techCol ?? columns.get('unassigned')).cards.push(card);
+    if (noShow) noShows.push({ appointmentId: a.id, customer: card.customer, vehicle: card.vehicle, startHour: card.startHour, hours: card.hours });
+  }
+
+  // ---- lay cards out down the day; overlaps sit side by side ----
+  // Order of preference: a time planned on the board (drag) → the booked time → carry-over
+  // queued from the afternoon, so mornings stay open for incoming cars.
+  const plans = store ? await store.getPlans(shopId, date) : new Map();
+  columns.get('unassigned').cards.sort((x, y) => (x.dropHour ?? 99) - (y.dropHour ?? 99));
+  for (const c of columns.values()) {
+    if (c.type === 'unassigned') continue;
+    let cursor = settings.carryOverStartHour;
+    for (const card of c.cards) {
+      card.span = Math.max(card.hours || 0, 1);
+      card.carryOver = card.startHour == null;
+      const plan = plans.get(card.key);
+      if (plan != null) { card.top = Number(plan); card.planned = true; }
+      else if (card.startHour != null) card.top = card.startHour;
+    }
+    for (const card of c.cards.filter((k) => k.top == null)) { card.top = cursor; cursor += card.span; }
+    c.cards.sort((x, y) => x.top - y.top);
+    const laneEnds = [];
+    for (const card of c.cards) {
+      let lane = laneEnds.findIndex((end) => end <= card.top + 0.001);
+      if (lane === -1) { lane = laneEnds.length; laneEnds.push(0); }
+      laneEnds[lane] = card.top + card.span;
+      card.lane = lane;
+    }
+    c.lanes = Math.max(1, laneEnds.length);
+  }
+
+  // ---- pay period hours by tech ----
+  const periodDone = new Map();
+  const seen = new Set();
+  for (const ro of closedInPeriod) {
+    if (seen.has(ro.id) || ro.deletedDate || !ro.completedDate) continue;
+    seen.add(ro.id);
+    const d = localDate(new Date(ro.completedDate), TZ);
+    if (d < period.start || d > period.end) continue;
+    for (const j of ro.jobs ?? []) {
+      if (j.authorized === false || j.archived) continue;
+      const t = j.technicianId ?? ro.technicianId;
+      if (t) periodDone.set(t, (periodDone.get(t) ?? 0) + (Number(j.laborHours) || 0));
+    }
+  }
+  const yesterday = addDays(date, -1);
+  const daysWorked = yesterday < period.start ? 0 : workDaysBetween(period.start, yesterday < period.end ? yesterday : period.end, settings.workDays);
+  const daysTotal = workDaysBetween(period.start, period.end, settings.workDays);
+
+  // ---- per-tech totals ----
+  const out = [];
+  for (const c of columns.values()) {
+    const active = round1(c.cards.filter((k) => k.counts).reduce((s, k) => s + k.hours, 0));
+    const partsHold = round1(c.parked.filter((k) => k.state === 'parts').reduce((s, k) => s + k.hours, 0));
+    const offsite = round1(c.parked.filter((k) => k.state === 'offsite').reduce((s, k) => s + k.hours, 0));
+    if (c.type === 'tech') {
+      const standing = techSettings.get(c.id)?.capacity ?? capacityOverrides[c.id] ?? settings.defaultCapacityHours;
+      const avail = availability.get(c.id) ?? null;
+      const capacity = round1(availableHours(standing, avail));
+      const ratio = capacity ? active / capacity : (active > 0 ? 2 : 0);
+      const completed = round1(periodDone.get(c.id) ?? 0);
+      Object.assign(c, {
+        capacity, standingCapacity: standing, active, open: round1(capacity - active), partsHold, offsite,
+        availability: avail ? { status: avail.status, leaveHour: avail.leaveHour ?? null, limitHours: avail.limitHours ?? null, note: avail.note ?? '', capacityToday: avail.capacityToday ?? null, synced: Boolean(avail.eventId) || avail.status === 'in' } : { status: 'in' },
+        out: avail?.status === 'out',
+        status: active > capacity ? 'over' : ratio >= settings.nearFullRatio ? 'near' : 'open',
+        appts: new Set(c.cards.map((k) => k.roId ?? k.appointmentId)).size,
+        pay: { start: period.start, end: period.end, completed, pace: round1(completed - daysWorked * standing), daysWorked, daysTotal },
+      });
+    } else Object.assign(c, { active, partsHold, offsite, appts: c.cards.length });
+    out.push(c);
+  }
+  const techCols = out.filter((c) => c.type === 'tech');
+
+  // ---- week strip ----
+  const week = [];
+  for (let i = 0; i < 6; i++) {
+    const d = addDays(mon, i);
+    const list = weekAppts.filter((a) => live(a) && a.customerId && localDate(new Date(a.startTime), TZ) === d);
+    week.push({ date: d, closed: !settings.workDays.includes(weekday(d)), count: list.length, waiters: list.filter((a) => a.appointmentOption?.code === 'STAY').length });
+  }
+  const counts = week.filter((w) => !w.closed).map((w) => w.count);
+  const avg = counts.length ? counts.reduce((a, b) => a + b, 0) / counts.length : 0;
+  for (const w of week) w.heavy = !w.closed && w.count >= avg * 1.15 && w.count > 0;
+
+  const customerAppts = dayAppts.filter((a) => a.customerId);
+  const waiters = customerAppts.filter((a) => a.appointmentOption?.code === 'STAY').length;
+  const unassigned = columns.get('unassigned');
+
+  return {
+    shopId: Number(shopId), date, isToday,
+    nowHour: isToday ? localHours(now, TZ) : null,
+    hours: (() => {
+      const tops = out.filter((c) => c.type === 'tech').flatMap((c) => c.cards.map((k) => [k.top, k.top + k.span]));
+      return {
+        open: settings.openHour, close: settings.closeHour,
+        start: Math.min(settings.openHour, ...tops.map(([t]) => Math.floor(t))),
+        end: Math.max(settings.closeHour, ...tops.map(([, e]) => Math.ceil(e))),
+      };
+    })(),
+    week, events, noShows,
+    summary: {
+      appointments: customerAppts.length, waiters, dropoffs: customerAppts.length - waiters,
+      activeHours: round1(techCols.reduce((s, c) => s + c.active, 0)),
+      capacityHours: round1(techCols.reduce((s, c) => s + c.capacity, 0)),
+      partsHold: round1(out.reduce((s, c) => s + c.partsHold, 0)), partsHoldROs: out.reduce((s, c) => s + c.parked.filter((k) => k.state === 'parts').length, 0),
+      offsite: round1(out.reduce((s, c) => s + c.offsite, 0)), offsiteROs: out.reduce((s, c) => s + c.parked.filter((k) => k.state === 'offsite').length, 0),
+      unassigned: unassigned.cards.length, unassignedHours: unassigned.active,
+    },
+    columns: out,
+    techCount: allTechs.length, hiddenTechs: allTechs.length - techs.length,
+    synced,
+    namesPending,
+    generatedAt: new Date().toISOString(),
+  };
+}

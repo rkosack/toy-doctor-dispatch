@@ -1,0 +1,19 @@
+{
+  "name": "toy-doctor-scheduler",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Toy Doctor dispatch board on top of Tekmetric",
+  "scripts": {
+    "start": "node server/index.js",
+    "demo": "TEKMETRIC_MOCK=true AUTH_DISABLED=true node server/index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@google-cloud/firestore": "^7.11.6",
+    "express": "^4.21.2",
+    "google-auth-library": "^9.15.1"
+  }
+}
