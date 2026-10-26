@@ -200,3 +200,8 @@ dialog.assign.wide { width: min(560px, calc(100vw - 32px)); }
 .pin1 { position: sticky; left: 64px; z-index: 5; box-shadow: 4px 0 6px -4px rgba(20,22,26,.18); }
 .colhead.un.pin1, .parked.un.pin1 { background: #FCF7F7; }
 .parked-label.pin0, .times.pin0 { background: var(--soft); }
+
+/* the card you just moved */
+@keyframes flashring { 0%, 100% { box-shadow: 0 0 0 0 rgba(179,32,42,0); } 30%, 70% { box-shadow: 0 0 0 4px rgba(179,32,42,.55); } }
+.card.flash, .qcard.flash { animation: flashring 1.1s ease-in-out 2; z-index: 4; }
+@media (prefers-reduced-motion: reduce) { .card.flash, .qcard.flash { animation: none; outline: 3px solid var(--red); } }

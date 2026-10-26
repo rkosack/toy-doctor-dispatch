@@ -99,6 +99,9 @@ function setShop(id) { state.shopId = id; remember('td-shop', String(id)); load(
 // ---------- rendering ----------
 function render() {
   const b = state.board;
+  // keep the sideways scroll on the board (and the page scroll) across redraws
+  const prevLeft = document.querySelector('.board')?.scrollLeft ?? state.boardLeft ?? 0;
+  const prevTop = window.scrollY;
   app.innerHTML = `${header()}
   <main>
     ${state.demo ? `<div class="banner demo"><b>Demo data</b><span class="muted">This is sample data so you can try the board. Real Tekmetric data shows once credentials are added.</span></div>` : ''}
@@ -108,6 +111,13 @@ function render() {
       : state.error ? '' : '<div class="loading">Loading the board…</div>'}
   </main>`;
   bind();
+  const boardEl = document.querySelector('.board');
+  if (boardEl) {
+    boardEl.scrollLeft = prevLeft;
+    boardEl.addEventListener('scroll', () => { state.boardLeft = boardEl.scrollLeft; }, { passive: true });
+  }
+  window.scrollTo(0, prevTop);
+  flashCard();
   const now = document.querySelector('.now');
   if (now && !state.scrolled) { state.scrolled = true; }
 }
@@ -439,6 +449,7 @@ async function assign(card, techId, hours, atHour) {
   try {
     await api('/api/assign', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     if (atHour != null && techId != null) await plan(card.kind === 'ro' ? `ro-${card.roId}-${techId}` : card.key, atHour);
+    state.flash = techId == null ? card.key : card.kind === 'ro' ? `ro-${card.roId}-${techId}` : card.key;
     if (techId == null && card.kind === 'appt') await plan(card.key, null);
     const tech = techCols().find((c) => c.id === techId)?.name;
     toast(techId == null ? `${card.customer} moved back to Unassigned`
@@ -495,6 +506,19 @@ function toast(msg, isError) {
   setTimeout(() => t.remove(), 5000);
 }
 
+// briefly highlight the card that was just moved, and bring it into view if it's off to the side
+function flashCard() {
+  if (!state.flash) return;
+  const el = [...document.querySelectorAll('[data-key]')].find((x) => x.dataset.key === state.flash);
+  state.flash = null;
+  if (!el) return;
+  const board = document.querySelector('.board');
+  const r = el.getBoundingClientRect(); const br = board.getBoundingClientRect();
+  if (r.left < br.left + 314 || r.right > br.right) board.scrollLeft += r.left - br.left - 340; // keep clear of the pinned columns
+  el.classList.add('flash');
+  setTimeout(() => el.classList.remove('flash'), 2200);
+}
+
 function bind() {
   app.querySelectorAll('[data-avail]').forEach((el) => el.addEventListener('click', () => { const c = state.board.columns.find((x) => String(x.id) === el.dataset.avail); if (c) openAvailability(c); }));
   app.querySelectorAll('[data-techs]').forEach((el) => el.addEventListener('click', () => { state.allTechs = el.dataset.techs === 'all'; remember('td-alltechs', state.allTechs ? '1' : ''); render(); }));
@@ -532,7 +556,7 @@ function bind() {
         return assign(card, null);
       }
       if (from?.id === target) {
-        try { await plan(card.key, hour); toast(`${card.customer} planned for ${fmtHour(hour)}`); await load(true); }
+        try { await plan(card.key, hour); state.flash = card.key; toast(`${card.customer} planned for ${fmtHour(hour)}`); await load(true); }
         catch (err) { if (err.message !== 'signed out') toast(err.message, true); }
         return;
       }
