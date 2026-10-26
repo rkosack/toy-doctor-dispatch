@@ -1,4 +1,4 @@
-// Toy Doctor Dispatch — board UI (read-only, step 1)
+// Toy Doctor Dispatch — board UI
 
 const app = document.getElementById('app');
 const HOUR = 88; // px per hour, matches --hour
@@ -16,6 +16,9 @@ const longDate = (d) => new Date(`${d}T12:00:00`).toLocaleDateString('en-US', { 
 const shortDate = (d) => new Date(`${d}T12:00:00`).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 const addDays = (d, n) => { const x = new Date(`${d}T12:00:00Z`); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10); };
 const icon = (path) => `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${path}"></path></svg>`;
+const toHM = (h) => `${String(Math.floor(h + 1e-6)).padStart(2, '0')}:${String(Math.round((h % 1) * 60)).padStart(2, '0')}`;
+const fromHM = (v) => { if (!v) return null; const [h, m] = String(v).split(':').map(Number); return h + (m || 0) / 60; };
+const json = (method, body) => ({ method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 const remember = (k, v) => { try { localStorage.setItem(k, v); } catch { /* storage off */ } };
 const recall = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
 
@@ -107,7 +110,7 @@ function render() {
     ${state.demo ? `<div class="banner demo"><b>Demo data</b><span class="muted">This is sample data so you can try the board. Real Tekmetric data shows once credentials are added.</span></div>` : ''}
     ${state.error ? `<div class="error" role="alert">${esc(state.error)}</div>` : ''}
     ${b ? `${weekStrip(b)}${noShowBanners(b)}${summary(b)}${techToolbar(b)}${board(b)}
-      <p class="foot">Active load counts sold hours on ROs labeled All Parts Here or In Progress, or promised today. Today's not-arrived appointments always count (1.0 h unless hours were set when assigning). An assigned tech is written to the RO when it opens, only if the RO has no tech yet. Parts hold and offsite hours show separately. Pay period = sold hours on ROs marked Complete, 1st–15th and 16th–end of month. Pace = completed − days worked × daily capacity. Carry-over work starts in the afternoon (1:00) so mornings stay open for incoming cars; drag any card to the time a tech will work on it. That plan is for the board only and never moves the customer's appointment in Tekmetric. Updates every minute.</p>`
+      <p class="foot">Active load counts sold hours on ROs labeled All Parts Here or In Progress, or promised today. Today's not-arrived appointments always count (1.0 h unless hours were set when assigning). An assigned tech is written to the RO when it opens, only if the RO has no tech yet. Parts hold and offsite hours show separately. Pay period = sold hours on ROs marked Complete, 1st–15th and 16th–end of month. Pace = completed − days worked × daily capacity. Carry-over work starts in the afternoon (1:00) so mornings stay open for incoming cars; drag any card to the time a tech will work on it. That plan is for the board only and never moves the customer's appointment in Tekmetric. To move the appointment itself, open the card and change its time, or drag it onto a day above. Click an open time in a tech's column to book there. Updates every minute.</p>`
       : state.error ? '' : '<div class="loading">Loading the board…</div>'}
   </main>`;
   bind();
@@ -138,6 +141,7 @@ function header() {
       <button type="button" class="icon-btn" data-go="1" aria-label="Next day">${icon('M6 3l5 5-5 5')}</button>
       <button type="button" class="btn" data-today ${state.date === state.today ? 'disabled' : ''}>Today</button>
       <button type="button" class="btn" data-refresh aria-label="Refresh">Refresh</button>
+      <button type="button" class="btn primary" data-book>+ Book appointment</button>
     </div>
     ${state.user && !state.authCfg?.disabled ? `<div class="user"><span>${esc(state.user.name)}</span><button type="button" data-signout>Sign out</button></div>` : ''}
   </header>`;
@@ -145,7 +149,7 @@ function header() {
 
 function weekStrip(b) {
   return `<section class="week" aria-label="This week">${b.week.map((w) => `
-    <button type="button" data-date="${w.date}" aria-pressed="${w.date === b.date}" class="${w.closed ? 'closed' : ''}">
+    <button type="button" data-date="${w.date}" ${w.closed ? '' : 'data-dropday'} aria-pressed="${w.date === b.date}" class="${w.closed ? 'closed' : ''}">
       <span class="d">${esc(dayName(w.date))}</span>
       ${w.closed ? '<span class="n muted">Closed</span><span class="s">—</span>'
         : `<span class="n">${w.count} <small>appts</small></span><span class="s ${w.heavy ? 'heavy' : ''}">${w.heavy ? 'Heavy day · ' : ''}${w.waiters} waiter${w.waiters === 1 ? '' : 's'}</span>`}
@@ -155,7 +159,12 @@ function weekStrip(b) {
 function noShowBanners(b) {
   return b.noShows.map((n) => `<div class="banner alert" role="status"><span class="dot"></span>
     <div style="flex:1 1 320px;min-width:0"><b>${esc(n.customer)} · ${esc(n.vehicle)} was due at ${fmtHour(n.startHour)} and hasn't arrived</b>
-    <small>Not marked arrived, canceled or rescheduled after 1 hour. Its ${fmtH(n.hours)} still counts toward today's load. Dismissing it from here comes in the next update.</small></div></div>`).join('');
+    <small>Not marked arrived, canceled or rescheduled after 1 hour. Its ${fmtH(n.hours)} still counts toward today's load. Dismiss it from today's hours?</small></div>
+    <div class="banner-actions">
+      <button type="button" class="btn primary" data-ns="noshow" data-id="${n.appointmentId}">Mark no-show</button>
+      <button type="button" class="btn" data-ns="resched" data-id="${n.appointmentId}">Reschedule</button>
+      <button type="button" class="btn" data-ns="keep" data-id="${n.appointmentId}">Still coming</button>
+    </div></div>`).join('');
 }
 
 function summary(b) {
@@ -278,7 +287,7 @@ function board(b) {
       <div class="times pin0" style="height:${height}px">${times}</div>
       ${cols.map((c) => (c.type === 'unassigned'
         ? `<div class="lane un queue pin1" data-drop="unassigned" style="height:${height}px">${c.cards.length ? c.cards.map(queueCard).join('') : '<span class="muted" style="font-size:12px;padding:6px">Nothing unassigned</span>'}</div>`
-        : `<div class="lane ${c.out ? 'is-out' : ''}" data-drop="${c.id}" style="height:${height}px">${closedBand}${awayBand(c, open, end)}${nowLine}${c.cards.map((k) => cardHtml(k, c)).join('')}</div>`)).join('')}
+        : `<div class="lane ${c.out ? 'is-out' : ''}" data-drop="${c.id}" data-bookat="${c.id}" style="height:${height}px">${closedBand}${awayBand(c, open, end)}${nowLine}${c.cards.map((k) => cardHtml(k, c)).join('')}</div>`)).join('')}
       <div class="parked-label pin0">Parked</div>
       ${cols.map((c) => `<div class="parked ${c.type === 'unassigned' ? 'un pin1' : ''}">${parked(c)}</div>`).join('')}
     </div>
@@ -459,51 +468,214 @@ async function assign(card, techId, hours, atHour) {
   } catch (e) { if (e.message !== 'signed out') toast(e.message, true); }
 }
 
+// ---------- appointments in Tekmetric: reschedule, no-show, cancel ----------
+// Changes the appointment itself in Tekmetric. `undo` puts back what was there.
+async function changeAppt(card, change, message, undo) {
+  try {
+    const r = await api(`/api/appointments/${card.appointmentId}`, json('PATCH', { shopId: state.shopId, knownStart: card.startTime, ...change }));
+    if (!change.status && r.date === state.date) state.flash = card.key;
+    toast(message, false, undo ? { label: 'Undo', fn: () => changeAppt(card, undo, 'Undone') } : null);
+    await load(true);
+    return true;
+  } catch (e) { if (e.message !== 'signed out') toast(e.message, true); return false; }
+}
+const whenText = (date, hour) => `${date === state.date ? '' : `${shortDate(date)} `}${fmtHour(hour)}`;
+const wasAt = (card) => ({ date: state.date, startHour: card.startHour, dropHour: card.dropHour != null && card.dropHour < card.startHour ? card.dropHour : null });
+const markNoShow = (card) => changeAppt(card, { status: 'NO_SHOW' }, `${card.customer} marked no-show in Tekmetric · off today's hours`, { status: 'NONE' });
+const cancelAppt = (card) => changeAppt(card, { status: 'CANCELED' }, `${card.customer}'s appointment canceled in Tekmetric`, { status: 'NONE' });
+async function keepComing(card) {
+  try { await api('/api/noshow/keep', json('POST', { shopId: state.shopId, date: state.date, appointmentId: card.appointmentId })); toast(`OK — ${card.customer} stays on today's board`); await load(true); }
+  catch (e) { if (e.message !== 'signed out') toast(e.message, true); }
+}
+
 function openAssign(card) {
   const isAppt = card.kind === 'appt';
   const current = card.assignedTechId;
+  const was = isAppt ? wasAt(card) : null;
   const dlg = document.createElement('dialog');
-  dlg.className = 'assign';
+  dlg.className = `assign ${isAppt ? 'wide' : ''}`;
   dlg.innerHTML = `<form method="dialog">
-    <h2>${current ? 'Change tech' : 'Assign to a tech'}</h2>
-    <p class="muted" style="margin:0">${esc(card.customer)} · ${esc(card.vehicle)}${card.startHour != null ? ` · ${fmtHour(card.startHour)}` : ''}<br>${esc(card.work)}</p>
+    <h2>${esc(card.customer)} · ${esc(card.vehicle)}</h2>
+    <p class="muted" style="margin:0">${esc(card.work)}${card.waiter ? ' · Waiter' : ''}</p>
+    ${isAppt ? `<fieldset class="when"><legend>Appointment in Tekmetric</legend>
+      <div class="row3">
+        <label>Date<input type="date" name="date" value="${state.date}" required></label>
+        <label>Time<input type="time" name="time" step="900" value="${toHM(card.startHour)}" required></label>
+        <label>Drop-off <span class="muted">(optional)</span><input type="time" name="drop" step="900" value="${was.dropHour != null ? toHM(was.dropHour) : ''}"></label>
+      </div>
+      <span class="note">Changing these moves the customer's appointment in Tekmetric.</span>
+    </fieldset>` : ''}
     <fieldset><legend>Technician</legend>
-      ${techCols().map((t) => `<label class="opt"><input type="radio" name="tech" value="${t.id}" ${t.id === current ? 'checked' : ''} required>
+      ${techCols().map((t) => `<label class="opt"><input type="radio" name="tech" value="${t.id}" ${t.id === current ? 'checked' : ''} ${isAppt ? '' : 'required'}>
         <span class="t" style="flex:1">${esc(t.name)}</span><span class="pill ${t.status}">${t.active.toFixed(1)} / ${t.capacity.toFixed(1)} h</span></label>`).join('')}
     </fieldset>
     ${isAppt ? `<label class="hrs-in">Estimated hours <input type="number" name="hours" min="0.1" max="24" step="0.1" value="${card.hours.toFixed(1)}"></label>` : ''}
     <p class="note">${isAppt
       ? 'When the customer arrives and the RO opens, this tech is set as the RO\'s technician in Tekmetric (only if no tech is set yet).'
       : `Sets this tech on RO ${esc(card.roNumber)} and on any of its jobs without a tech, in Tekmetric, right away.`}</p>
+    ${isAppt ? `<div class="actions minor">
+      <button type="button" class="btn" data-noshow>Mark no-show</button>
+      <button type="button" class="btn" data-cancelappt>Cancel appointment</button>
+      ${current ? '<button type="button" class="btn" data-unassign>Move to Unassigned</button>' : ''}
+    </div>` : ''}
     <div class="actions">
-      ${isAppt && current ? '<button type="button" class="btn" data-unassign>Move to Unassigned</button>' : ''}
       <span style="flex:1"></span>
-      <button type="button" class="btn" data-cancel>Cancel</button>
-      <button type="submit" class="btn primary">${current ? 'Save' : 'Assign'}</button>
+      <button type="button" class="btn" data-cancel>Close</button>
+      <button type="submit" class="btn primary">${isAppt || current ? 'Save' : 'Assign'}</button>
     </div>
   </form>`;
   document.body.appendChild(dlg);
   const close = () => { dlg.close(); dlg.remove(); };
   dlg.querySelector('[data-cancel]').addEventListener('click', close);
-  dlg.querySelector('[data-unassign]')?.addEventListener('click', () => { close(); assign(card, null); });
-  dlg.querySelector('form').addEventListener('submit', (e) => {
+  dlg.querySelector('[data-unassign]')?.addEventListener('click', () => { close(); assign(card, null, card.hours); });
+  dlg.querySelector('[data-noshow]')?.addEventListener('click', () => { close(); markNoShow(card); });
+  dlg.querySelector('[data-cancelappt]')?.addEventListener('click', (e) => {
+    const b = e.currentTarget;
+    if (!b.dataset.sure) { b.dataset.sure = '1'; b.textContent = 'Click again to cancel it in Tekmetric'; b.classList.add('danger'); return; }
+    close(); cancelAppt(card);
+  });
+  dlg.querySelector('form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const f = new FormData(e.target);
+    const techId = f.get('tech') ? Number(f.get('tech')) : current ?? null;
+    if (!isAppt) { close(); return assign(card, techId); }
+    const hours = Number(f.get('hours')) || card.hours;
+    const date = f.get('date'); const startHour = fromHM(f.get('time')); const dropHour = fromHM(f.get('drop'));
+    if (dropHour != null && dropHour > startHour) return toast('Drop-off should be at or before the appointment time.', true);
+    const moved = date !== was.date || Math.abs(startHour - was.startHour) > 0.01 || (dropHour ?? null) !== (was.dropHour ?? null);
+    const retech = techId !== current || Math.abs(hours - card.hours) > 0.01;
     close();
-    assign(card, Number(f.get('tech')), Number(f.get('hours')) || card.hours);
+    if (retech) {
+      try { await api('/api/assign', json('POST', { shopId: state.shopId, appointmentId: card.appointmentId, techId, hours })); }
+      catch (err) { if (err.message !== 'signed out') toast(err.message, true); return; }
+    }
+    const who = techCols().find((c) => c.id === techId)?.name;
+    if (moved) return changeAppt(card, { date, startHour, dropHour }, `${card.customer} moved to ${whenText(date, startHour)} in Tekmetric${retech && who ? ` · ${who}` : ''}`, was);
+    if (retech) { state.flash = card.key; toast(techId ? `${card.customer} → ${who} · ${hours.toFixed(1)} h` : 'Saved'); await load(true); }
   });
   dlg.addEventListener('cancel', () => dlg.remove());
   dlg.showModal();
 }
 
-function toast(msg, isError) {
+// ---------- booking ----------
+const KIND_HOURS = { red: 3, yellow: 1, blue: 1.5, green: 1, purple: 2 };
+function openBook(pre = {}) {
+  const b = state.board;
+  const allT = b.columns.filter((c) => c.type === 'tech');
+  const startHour = pre.hour ?? Math.max(b.hours.open, Math.min(Math.ceil(((b.isToday ? b.nowHour : 0) ?? 0) * 2) / 2, 16));
+  const techOpts = (date) => `<option value="">Unassigned</option>${allT.map((t) => `<option value="${t.id}" ${t.id === pre.techId ? 'selected' : ''}>${esc(t.name)}${date === state.date ? ` · ${t.out ? 'out' : t.open >= 0 ? `${t.open.toFixed(1)} h open` : `${Math.abs(t.open).toFixed(1)} h over`}` : ''}</option>`).join('')}`;
+  const dlg = document.createElement('dialog');
+  dlg.className = 'assign wide book';
+  dlg.innerHTML = `<form method="dialog" autocomplete="off">
+    <h2>Book appointment</h2>
+    <div class="field">
+      <label for="bk-q">Customer</label>
+      <div data-picked hidden class="picked"><span class="t"></span><button type="button" class="linkbtn" data-change>Change</button></div>
+      <input id="bk-q" type="search" placeholder="Name or phone number" aria-describedby="bk-hint">
+      <div class="results" data-results role="listbox" aria-label="Matching customers"></div>
+      <span id="bk-hint" class="note">New customer? Add them in Tekmetric first, then search here.</span>
+    </div>
+    <fieldset data-vehicles hidden><legend>Vehicle</legend><div data-vlist></div></fieldset>
+    <fieldset><legend>Type of work</legend><div class="kinds">
+      ${['red', 'yellow', 'blue', 'green', 'purple'].map((c) => `<label class="kind" style="--bg:var(--c-${c}-bg);--bd:var(--c-${c}-bd);--dot:var(--c-${c}-dot)"><input type="radio" name="category" value="${c}" required><i></i><span>${esc(CAT[c])}</span></label>`).join('')}
+    </div></fieldset>
+    <div class="field"><label for="bk-concern">Concern / work requested</label><textarea id="bk-concern" name="concern" rows="2" maxlength="500" required placeholder="e.g. Check engine light, 60k service"></textarea></div>
+    <div class="row3">
+      <label>Date<input type="date" name="date" value="${state.date}" required></label>
+      <label>Appointment<input type="time" name="time" step="900" value="${toHM(startHour)}" required></label>
+      <label>Drop-off <span class="muted">(optional)</span><input type="time" name="drop" step="900"></label>
+    </div>
+    <div class="row3">
+      <label>Est. hours<input type="number" name="hours" min="0.1" max="24" step="0.1" value="1.0"></label>
+      <label style="grid-column:span 2">Technician<select name="tech">${techOpts(state.date)}</select></label>
+    </div>
+    <fieldset><legend>Ride</legend><div class="chips" style="padding-left:0">
+      ${[['NONE', 'None'], ['LOANER', 'Loaner'], ['RIDE', 'Ride / shuttle']].map(([v, l], i) => `<label class="chipopt"><input type="radio" name="ride" value="${v}" ${i === 0 ? 'checked' : ''}><span>${l}</span></label>`).join('')}
+    </div></fieldset>
+    <p class="note">Books the appointment in Tekmetric with the matching color. Waiters are booked green (Tekmetric's API can't set "Stay with vehicle"). The tech is set on the RO when it opens.</p>
+    <div class="actions"><span style="flex:1"></span><button type="button" class="btn" data-cancel>Cancel</button><button type="submit" class="btn primary">Book</button></div>
+  </form>`;
+  document.body.appendChild(dlg);
+  const form = dlg.querySelector('form');
+  const q = dlg.querySelector('#bk-q'); const results = dlg.querySelector('[data-results]');
+  const picked = dlg.querySelector('[data-picked]'); const vbox = dlg.querySelector('[data-vehicles]');
+  let customer = null; let vehicles = []; let timer = null; let seq = 0; let hoursTouched = false;
+  const close = () => { dlg.close(); dlg.remove(); };
+  dlg.querySelector('[data-cancel]').addEventListener('click', close);
+  dlg.addEventListener('cancel', () => dlg.remove());
+  form.hours.addEventListener('input', () => { hoursTouched = true; });
+  form.addEventListener('change', (e) => {
+    if (e.target.name === 'category' && !hoursTouched) form.hours.value = KIND_HOURS[e.target.value].toFixed(1);
+    if (e.target.name === 'date') { const keep = form.tech.value; form.tech.innerHTML = techOpts(e.target.value); form.tech.value = keep; }
+  });
+  q.addEventListener('input', () => {
+    clearTimeout(timer);
+    const term = q.value.trim();
+    if (term.length < 2) { results.innerHTML = ''; return; }
+    timer = setTimeout(async () => {
+      const my = ++seq;
+      results.innerHTML = '<span class="muted" style="padding:8px">Searching…</span>';
+      try {
+        const r = await api(`/api/customers?shop=${state.shopId}&q=${encodeURIComponent(term)}`);
+        if (my !== seq) return;
+        results.innerHTML = r.customers.length ? r.customers.map((c, i) => `<button type="button" class="opt" role="option" data-i="${i}"><span class="t" style="flex:1;text-align:left"><b>${esc(c.name)}</b></span><span class="muted">${esc(c.phone)}</span></button>`).join('')
+          : '<span class="muted" style="padding:8px">No match. Add new customers in Tekmetric first.</span>';
+        results.querySelectorAll('[data-i]').forEach((el) => el.addEventListener('click', () => pick(r.customers[Number(el.dataset.i)])));
+      } catch (e) { if (my === seq) results.innerHTML = `<span class="error" style="padding:8px">${esc(e.message)}</span>`; }
+    }, 250);
+  });
+  async function pick(c) {
+    customer = c; results.innerHTML = ''; q.hidden = true;
+    picked.hidden = false; picked.querySelector('.t').textContent = `${c.name}${c.phone ? ` · ${c.phone}` : ''}`;
+    vbox.hidden = false; const list = vbox.querySelector('[data-vlist]'); list.innerHTML = '<span class="muted">Loading vehicles…</span>';
+    try {
+      vehicles = (await api(`/api/vehicles?shop=${state.shopId}&customerId=${c.id}`)).vehicles;
+      list.innerHTML = vehicles.length ? vehicles.map((v, i) => `<label class="opt"><input type="radio" name="vehicle" value="${v.id}" ${vehicles.length === 1 || i === 0 ? 'checked' : ''} required><span class="t" style="flex:1">${esc(v.text)}</span>${v.plate ? `<span class="muted">${esc(v.plate)}</span>` : ''}</label>`).join('')
+        : '<span class="muted">No vehicles on file. Add the vehicle in Tekmetric first.</span>';
+    } catch (e) { list.innerHTML = `<span class="error">${esc(e.message)}</span>`; }
+    form.querySelector('input[name=category]')?.focus();
+  }
+  picked.querySelector('[data-change]').addEventListener('click', () => { customer = null; picked.hidden = true; vbox.hidden = true; q.hidden = false; q.focus(); q.select(); });
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const f = new FormData(form);
+    if (!customer) { q.focus(); return toast('Pick a customer first.', true); }
+    const vehicle = vehicles.find((v) => v.id === Number(f.get('vehicle')));
+    if (!vehicle) return toast('Pick a vehicle.', true);
+    const start = fromHM(f.get('time')); const drop = fromHM(f.get('drop'));
+    if (drop != null && drop > start) return toast('Drop-off should be at or before the appointment time.', true);
+    const body = {
+      shopId: state.shopId, customerId: customer.id, vehicleId: vehicle.id, title: `${customer.lastName} – ${vehicle.model}`,
+      category: f.get('category'), concern: f.get('concern'), date: f.get('date'), startHour: start, dropHour: drop,
+      hours: Number(f.get('hours')), techId: f.get('tech') || null, rideOption: f.get('ride'),
+    };
+    const btn = form.querySelector('[type=submit]'); btn.disabled = true; btn.textContent = 'Booking…';
+    try {
+      const r = await api('/api/appointments', json('POST', body));
+      close();
+      const tech = allT.find((t) => t.id === Number(body.techId))?.name;
+      if (body.date === state.date) state.flash = `appt-${r.appointmentId}`;
+      toast(`Booked ${customer.lastName} · ${whenText(body.date, start)}${tech ? ` · ${tech}` : ''} — in Tekmetric now`);
+      await load(true);
+    } catch (err) { btn.disabled = false; btn.textContent = 'Book'; if (err.message !== 'signed out') toast(err.message, true); }
+  });
+  dlg.showModal();
+  q.focus();
+}
+
+function toast(msg, isError, action) {
   document.querySelector('.toast')?.remove();
   const t = document.createElement('div');
   t.className = `toast ${isError ? 'err' : ''}`;
   t.setAttribute('role', 'status');
-  t.textContent = msg;
+  const text = document.createElement('span'); text.textContent = msg; t.appendChild(text);
+  if (action) {
+    const b = document.createElement('button'); b.type = 'button'; b.textContent = action.label;
+    b.addEventListener('click', () => { t.remove(); action.fn(); });
+    t.appendChild(b);
+  }
   document.body.appendChild(t);
-  setTimeout(() => t.remove(), 5000);
+  setTimeout(() => t.remove(), action ? 9000 : 5000);
 }
 
 // briefly highlight the card that was just moved, and bring it into view if it's off to the side
@@ -570,6 +742,54 @@ function bind() {
   app.querySelector('[data-today]')?.addEventListener('click', () => go(state.today));
   app.querySelector('[data-refresh]')?.addEventListener('click', () => load(true));
   app.querySelector('[data-signout]')?.addEventListener('click', signOut);
+  bindBooking();
+}
+
+// booking, no-show buttons, and moving appointments to another day
+function bindBooking() {
+  app.querySelector('[data-book]')?.addEventListener('click', () => openBook());
+  app.querySelectorAll('[data-ns]').forEach((el) => el.addEventListener('click', () => {
+    const card = findCard(`appt-${el.dataset.id}`);
+    if (!card) return toast('That appointment is no longer on the board. Refresh and try again.', true);
+    ({ noshow: markNoShow, keep: keepComing, resched: openAssign })[el.dataset.ns](card);
+  }));
+
+  // click an open time in a tech's column to book there; a hint follows the pointer
+  const hourAt = (lane, y) => { const { start, end } = state.board.hours; return Math.min(Math.max(Math.floor((start + y / HOUR) * 4) / 4, start), end - 0.25); };
+  const open = (e) => e.target.classList.contains('lane') || e.target.classList.contains('closed-band');
+  app.querySelectorAll('[data-bookat]').forEach((lane) => {
+    let ghost = null;
+    lane.addEventListener('mousemove', (e) => {
+      if (!open(e) || state.drag) { ghost?.remove(); ghost = null; return; }
+      const y = e.clientY - lane.getBoundingClientRect().top;
+      const h = hourAt(lane, y);
+      if (!ghost) { ghost = document.createElement('div'); ghost.className = 'ghost'; ghost.setAttribute('aria-hidden', 'true'); lane.appendChild(ghost); }
+      ghost.style.top = `${(h - state.board.hours.start) * HOUR}px`;
+      ghost.textContent = `+ Book ${fmtHour(h)}`;
+    });
+    lane.addEventListener('mouseleave', () => { ghost?.remove(); ghost = null; });
+    lane.addEventListener('click', (e) => {
+      if (!open(e)) return;
+      openBook({ techId: Number(lane.dataset.bookat), hour: hourAt(lane, e.clientY - lane.getBoundingClientRect().top) });
+    });
+  });
+
+  // drag a booked appointment onto another day in the week strip to move it (same time)
+  app.querySelectorAll('[data-dropday]').forEach((day) => {
+    const ok = () => state.drag?.key?.startsWith('appt-') && day.dataset.date !== state.date;
+    day.addEventListener('dragover', (e) => { if (!ok()) return; e.preventDefault(); day.classList.add('drop'); });
+    day.addEventListener('dragleave', () => day.classList.remove('drop'));
+    day.addEventListener('drop', (e) => {
+      day.classList.remove('drop');
+      if (!ok()) return;
+      e.preventDefault();
+      const card = findCard(state.drag.key); state.drag = null;
+      if (!card) return;
+      const date = day.dataset.date;
+      changeAppt(card, { date }, `${card.customer} moved to ${longDate(date)} at ${fmtHour(card.startHour)} in Tekmetric`, wasAt(card));
+    });
+  });
+  app.querySelectorAll('[data-key]').forEach((el) => el.addEventListener('dragend', () => { state.drag = null; app.querySelectorAll('.drop').forEach((x) => x.classList.remove('drop')); }));
 }
 
 start().catch((e) => { app.innerHTML = `<div class="loading error">${esc(e.message)}</div>`; });

@@ -56,6 +56,8 @@ function dropHour(appt, date) {
   return localHours(new Date(t), TZ);
 }
 
+// A waiter: Tekmetric's "Stay with vehicle", or green (Toy Doctor's waiter color; the API can't set "Stay").
+const isWaiter = (a) => a?.appointmentOption?.code === 'STAY' || colorCategory(a?.color) === 'green';
 const vehicleText = (v) => [v?.year, v?.model || v?.make].filter(Boolean).join(' ');
 const personName = (e) => (e ? `${e.firstName ?? ''} ${(e.lastName ?? '').slice(0, 1)}.`.trim() : '');
 const initials = (e) => `${(e.firstName ?? ' ')[0]}${(e.lastName ?? ' ')[0]}`.toUpperCase();
@@ -159,7 +161,7 @@ export async function buildBoard(client, { shopId, date, now = new Date(), store
       const counts = state === 'active' || (promisedToday && state === 'pending') || (notArrived && state === 'pending');
       const card = {
         key: `ro-${ro.id}-${techId}`, kind: 'ro', roId: ro.id, roNumber: ro.repairOrderNumber,
-        category: colorCategory(appt?.color), waiter: appt?.appointmentOption?.code === 'STAY',
+        category: colorCategory(appt?.color), waiter: isWaiter(appt),
         ...who(ro), work: g.jobs.join(', '), hours: round1(g.hours), hoursEstimated: estimated,
         label: notArrived ? `${label} · not arrived` : label, state, counts: Boolean(counts), promisedToday: Boolean(promisedToday),
         startHour: apptToday ? localHours(new Date(appt.startTime), TZ) : null,
@@ -177,20 +179,22 @@ export async function buildBoard(client, { shopId, date, now = new Date(), store
   const nowMs = now.getTime();
   const events = [];
   const noShows = [];
+  const kept = (store?.getMeta ? await store.getMeta(`noshow-keep-${shopId}_${date}`) : null) ?? {}; // "Still coming"
   for (const a of dayAppts) {
     if (linked.has(a.id)) continue;
     if (!a.customerId) { events.push({ id: a.id, title: a.title, startHour: localHours(new Date(a.startTime), TZ), endHour: localHours(new Date(a.endTime), TZ) }); continue; }
     const start = new Date(a.startTime).getTime();
     const arrived = a.arrived === true || a.appointmentStatus === 'ARRIVED';
-    const noShow = isToday && !arrived && nowMs > start + settings.noShowGraceMinutes * 60_000;
+    const noShow = isToday && !arrived && !kept[a.id] && nowMs > start + settings.noShowGraceMinutes * 60_000;
     const assigned = assignments.get(a.id);
     const techCol = assigned && columns.get(assigned.techId);
     const card = {
-      key: `appt-${a.id}`, kind: 'appt', appointmentId: a.id, category: colorCategory(a.color), waiter: a.appointmentOption?.code === 'STAY',
+      key: `appt-${a.id}`, kind: 'appt', appointmentId: a.id, category: colorCategory(a.color), waiter: isWaiter(a),
       ...who(a), work: a.description || a.title || '', hours: assigned?.hours ?? DEFAULT_APPT_HOURS, hoursEstimated: true,
       label: arrived ? 'Arrived' : 'Not arrived', state: arrived ? 'arrived' : 'notArrived', counts: true, noShow,
       startHour: localHours(new Date(a.startTime), TZ), dropHour: dropHour(a, date), alsoOn: [],
       assignedTechId: techCol ? assigned.techId : null,
+      startTime: a.startTime, rideOption: typeof a.rideOption === 'string' ? a.rideOption : a.rideOption?.code ?? null,
     };
     (techCol ?? columns.get('unassigned')).cards.push(card);
     if (noShow) noShows.push({ appointmentId: a.id, customer: card.customer, vehicle: card.vehicle, startHour: card.startHour, hours: card.hours });
@@ -271,14 +275,14 @@ export async function buildBoard(client, { shopId, date, now = new Date(), store
   for (let i = 0; i < 6; i++) {
     const d = addDays(mon, i);
     const list = weekAppts.filter((a) => live(a) && a.customerId && localDate(new Date(a.startTime), TZ) === d);
-    week.push({ date: d, closed: !settings.workDays.includes(weekday(d)), count: list.length, waiters: list.filter((a) => a.appointmentOption?.code === 'STAY').length });
+    week.push({ date: d, closed: !settings.workDays.includes(weekday(d)), count: list.length, waiters: list.filter(isWaiter).length });
   }
   const counts = week.filter((w) => !w.closed).map((w) => w.count);
   const avg = counts.length ? counts.reduce((a, b) => a + b, 0) / counts.length : 0;
   for (const w of week) w.heavy = !w.closed && w.count >= avg * 1.15 && w.count > 0;
 
   const customerAppts = dayAppts.filter((a) => a.customerId);
-  const waiters = customerAppts.filter((a) => a.appointmentOption?.code === 'STAY').length;
+  const waiters = customerAppts.filter(isWaiter).length;
   const unassigned = columns.get('unassigned');
 
   return {

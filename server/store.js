@@ -9,7 +9,7 @@ import path from 'node:path';
 
 function createFileStore(file) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  let db = { assignments: {}, synced: {}, plans: {}, techs: {}, availability: {} };
+  let db = { assignments: {}, synced: {}, plans: {}, techs: {}, availability: {}, meta: {} };
   try { db = { ...db, ...JSON.parse(fs.readFileSync(file, 'utf8')) }; } catch { /* first run */ }
   const save = () => fs.writeFileSync(file, JSON.stringify(db, null, 2));
   const key = (shopId, apptId) => `${shopId}_${apptId}`;
@@ -48,6 +48,9 @@ function createFileStore(file) {
       if (value == null) delete db.availability[k][techId]; else db.availability[k][techId] = value;
       save();
     },
+    // small settings and notes kept by the board (learned colors, "still coming" no-shows): merged on save
+    async getMeta(id) { return db.meta?.[id] ?? null; },
+    async setMeta(id, value) { db.meta ??= {}; db.meta[id] = { ...(db.meta[id] ?? {}), ...value }; save(); },
   };
 }
 
@@ -60,6 +63,7 @@ async function createFirestoreStore() {
   const P = fsdb.collection('plans');
   const T = fsdb.collection('techSettings');
   const V = fsdb.collection('availability');
+  const M = fsdb.collection('meta');
   const key = (shopId, apptId) => `${shopId}_${apptId}`;
   return {
     async getAssignments(shopId, apptIds) {
@@ -101,6 +105,8 @@ async function createFirestoreStore() {
     async setAvailability(shopId, date, techId, value) {
       await V.doc(`${shopId}_${date}`).set({ [techId]: value == null ? FieldValue.delete() : value }, { merge: true });
     },
+    async getMeta(id) { const s = await M.doc(id).get(); return s.exists ? s.data() : null; },
+    async setMeta(id, value) { await M.doc(id).set(value, { merge: true }); },
   };
 }
 

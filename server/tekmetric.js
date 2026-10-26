@@ -105,11 +105,33 @@ export function createTekmetricClient({ clientId, clientSecret, environment = 's
     // Names change rarely, so these are cached for an hour.
     getCustomer: (id) => get(`/api/v1/customers/${id}`, 3_600_000),
     getVehicle: (id) => get(`/api/v1/vehicles/${id}`, 3_600_000),
+    // booking form: never cached, so new customers and vehicles show up right away
+    searchCustomers: async (shop, search) => {
+      const data = await request('GET', `/api/v1/customers?${new URLSearchParams({ shop, search, size: '25' })}`);
+      return Array.isArray(data) ? data : data?.content ?? [];
+    },
+    getVehicles: async (shop, customerId) => {
+      const data = await request('GET', `/api/v1/vehicles?${new URLSearchParams({ shop, customerId, size: '50' })}`);
+      return Array.isArray(data) ? data : data?.content ?? [];
+    },
+    // One appointment, fresh from Tekmetric. Falls back to that day's list if the single read isn't available.
+    getAppointment: async (id, shop, startIso) => {
+      try {
+        const data = await request('GET', `/api/v1/appointments/${id}`);
+        const a = data?.data && typeof data.data === 'object' ? data.data : data;
+        if (a?.id) return a;
+      } catch (e) { if (!startIso) throw e; }
+      const day = new Date(startIso).getTime();
+      const qs = new URLSearchParams({ shop, start: new Date(day - 864e5).toISOString(), end: new Date(day + 864e5).toISOString(), size: '100' });
+      const data = await request('GET', `/api/v1/appointments?${qs}`);
+      return (data?.content ?? []).find((a) => a.id === Number(id)) ?? null;
+    },
     patchRepairOrder: (id, body) => request('PATCH', `/api/v1/repair-orders/${id}`, body),
     patchJob: (id, body) => request('PATCH', `/api/v1/jobs/${id}`, body),
     createAppointment: (body) => request('POST', '/api/v1/appointments', body),
     patchAppointment: (id, body) => request('PATCH', `/api/v1/appointments/${id}`, body),
     deleteAppointment: (id) => request('DELETE', `/api/v1/appointments/${id}`),
-    clearCache: () => cache.clear(),
+    // after a change: drop cached board data, keep customer and vehicle names
+    clearCache: () => { for (const k of cache.keys()) if (!/^\/api\/v1\/(customers|vehicles)\/\d+$/.test(k)) cache.delete(k); },
   };
 }

@@ -29,6 +29,9 @@ const CARS = [['Toyota', '4Runner'], ['Toyota', 'Tundra'], ['Toyota', 'Camry'], 
 
 // Tekmetric's appointment palette, as hex
 const COLORS = { red: '#D50000', yellow: '#F6BF26', blue: '#039BE5', green: '#33B679', purple: '#8E24AA', navy: '#0D4A80' };
+const NAMED = { red: '#D50000', pink: '#E67C73', yellow: '#F6BF26', orange: '#F4511E', 'light green': '#7CB342', green: '#33B679', blue: '#039BE5', navy: '#0D4A80', lavender: '#7986CB', purple: '#8E24AA' };
+// what Tekmetric does with an appointment write: color names become hex, "status" becomes appointmentStatus
+const fromBody = ({ color, status, ...rest }) => ({ ...rest, ...(color ? { color: NAMED[color] ?? color } : {}), ...(status ? { appointmentStatus: status } : {}) });
 const WORK = {
   red: [['Trans shudder diag', 3], ['No-start diag + repair', 4], ['Head gasket', 5], ['Timing belt + water pump', 4.5]],
   yellow: [['Check engine light', 1], ['Hybrid warning light', 1], ['Front-end noise', 1], ['ABS light', 1.5]],
@@ -46,7 +49,7 @@ const STATUS = { 2: 'WORKINPROGRESS', 3: 'COMPLETE', 5: 'POSTED' };
 
 let customers = new Map(); let vehicles = new Map(); let employees = {};
 const pools = new Map(); // shop -> { appts, ros } generated for the window around "today"
-const patches = { ro: new Map(), job: new Map() };
+const patches = { ro: new Map(), job: new Map(), appt: new Map() };
 const events = new Map();
 
 // Demo clock: on a weekday during shop hours it's the real time; otherwise the next
@@ -95,7 +98,7 @@ function generate(shop) {
       const vehId = custId * 10;
       // draw every value even when the customer already exists, so the day's sequence never shifts
       const first = pick(r, FIRST), last = pick(r, LAST), year = 2005 + Math.floor(r() * 18);
-      if (!customers.has(custId)) customers.set(custId, { id: custId, firstName: first, lastName: last });
+      if (!customers.has(custId)) customers.set(custId, { id: custId, firstName: first, lastName: last, email: `${first.toLowerCase()}.${last.toLowerCase()}@example.com`, phone: [{ number: `303-555-${String(custId % 10000).padStart(4, '0')}`, type: 'Mobile', primary: true }] });
       if (!vehicles.has(vehId)) vehicles.set(vehId, { id: vehId, customerId: custId, year, make, model });
       const slot = Math.floor(r() * 15); // 8:00 … 15:00 in half hours
       const start = zonedTime(d, 8 + Math.floor(slot / 2), (slot % 2) * 30, TZ);
@@ -149,7 +152,8 @@ function generate(shop) {
       });
     }
   }
-  // re-apply tech changes made through the API (patches survive regeneration)
+  // re-apply changes made through the API (patches survive regeneration)
+  for (const a of appts) if (patches.appt.has(a.id)) Object.assign(a, patches.appt.get(a.id));
   for (const ro of ros) {
     if (patches.ro.has(ro.id)) Object.assign(ro, patches.ro.get(ro.id));
     for (const j of ro.jobs) if (patches.job.has(j.id)) Object.assign(j, patches.job.get(j.id));
@@ -190,10 +194,22 @@ export function createMockClient() {
       return { type: 'SUCCESS' };
     },
     patchLog: () => ({ ro: [...patches.ro], job: [...patches.job], events: [...events.values()] }),
-    // custom events (appointments with no customer) created through the API
-    createAppointment: async (body) => { const id = 9_000_000 + events.size + 1 + Math.floor(Math.random() * 1000) * 1000; events.set(id, { id, shopId: body.shopId, customerId: null, vehicleId: null, appointmentStatus: 'NONE', deletedDate: null, ...body }); return { type: 'SUCCESS', message: 'Appointment Saved', data: id }; },
-    patchAppointment: async (id, body) => { if (!events.has(Number(id))) throw new Error('404'); Object.assign(events.get(Number(id)), body); return { type: 'SUCCESS' }; },
+    // appointments and custom events created through the API
+    createAppointment: async (body) => { const id = 9_000_000 + events.size + 1 + Math.floor(Math.random() * 1000) * 1000; events.set(id, { id, customerId: null, vehicleId: null, appointmentStatus: 'NONE', deletedDate: null, color: NAMED.navy, ...fromBody(body), shopId: body.shopId }); return { type: 'SUCCESS', message: 'Appointment Saved', data: id }; },
+    patchAppointment: async (id, body) => {
+      id = Number(id);
+      if (events.has(id)) { Object.assign(events.get(id), fromBody(body)); return { type: 'SUCCESS', data: id }; }
+      const a = [...pools.values()].flatMap((p) => p.appts).find((x) => x.id === id);
+      if (!a) throw new Error('Tekmetric PATCH /api/v1/appointments failed (404)');
+      const change = fromBody(body);
+      patches.appt.set(id, { ...(patches.appt.get(id) ?? {}), ...change });
+      for (const p of pools.values()) for (const x of p.appts) if (x.id === id) Object.assign(x, change);
+      return { type: 'SUCCESS', data: id };
+    },
+    getAppointment: async (id) => { id = Number(id); const a = events.get(id) ?? [...pools.values()].flatMap((p) => p.appts).find((x) => x.id === id); return a ? strip({ ...a }) : null; },
     deleteAppointment: async (id) => { if (!events.delete(Number(id))) throw new Error('404'); return { type: 'SUCCESS', data: id }; },
+    searchCustomers: async (shop, q) => { generate(Number(shop)); const t = String(q).toLowerCase().replace(/\D/g, '') || null; const s = String(q).toLowerCase(); return [...customers.values()].filter((c) => Math.floor(c.id / 10000) === Number(shop) && (`${c.firstName} ${c.lastName}`.toLowerCase().includes(s) || (t && c.phone[0].number.replace(/\D/g, '').includes(t)))).slice(0, 25); },
+    getVehicles: async (shop, customerId) => [...vehicles.values()].filter((v) => v.customerId === Number(customerId)),
     clearCache: () => {},
   };
 }

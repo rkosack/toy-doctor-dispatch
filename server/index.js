@@ -14,6 +14,7 @@ import { localDate } from './time.js';
 import { createStore } from './store.js';
 import { assignOpenRO } from './sync.js';
 import { saveAvailability } from './availability.js';
+import { bookAppointment, changeAppointment, customerVehicles, keepNoShow, searchCustomers, UserError } from './appointments.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -79,7 +80,8 @@ app.post('/api/assign', auth.require, async (req, res, next) => {
     if (techId != null && !techs.some((t) => t.id === techId)) return res.status(400).json({ error: 'That tech was not found at this shop.' });
 
     if (appointmentId) {
-      if (techId == null) await store.removeAssignment(shopId, Number(appointmentId));
+      // back to Unassigned keeps the estimated hours
+      if (techId == null) await store.setAssignment(shopId, Number(appointmentId), { techId: null, hours, by: req.user.email });
       else await store.setAssignment(shopId, Number(appointmentId), { techId, hours, by: req.user.email });
       return res.json({ ok: true });
     }
@@ -148,6 +150,48 @@ app.post('/api/plan', auth.require, async (req, res, next) => {
     res.json({ ok: true });
   } catch (e) { next(e); }
 });
+
+// ---- booking, rescheduling, no-shows ----
+const tekEnv = MOCK ? 'demo' : env.TEKMETRIC_ENV || 'sandbox';
+const ctx = (req) => ({ client, store, env: tekEnv, user: req.user.email });
+const userErrors = (fn) => async (req, res, next) => {
+  try { await fn(req, res); } catch (e) {
+    if (e instanceof UserError) return res.status(400).json({ error: e.message });
+    const tek = /^Tekmetric \w+ \S+ failed \((\d+)\): ?(.*)$/s.exec(e.message ?? '');
+    if (tek && tek[1].startsWith('4')) {
+      console.error(e.message);
+      let why = tek[2]; try { why = JSON.parse(tek[2]).message || why; } catch { /* plain text */ }
+      return res.status(502).json({ error: `Tekmetric didn't accept that change${why ? `: ${String(why).slice(0, 140)}` : '.'}` });
+    }
+    next(e);
+  }
+};
+
+app.get('/api/customers', auth.require, userErrors(async (req, res) => {
+  const q = String(req.query.q ?? '').trim();
+  if (q.length < 2) return res.json({ customers: [] });
+  res.json({ customers: await searchCustomers(client, Number(req.query.shop), q) });
+}));
+app.get('/api/vehicles', auth.require, userErrors(async (req, res) => {
+  res.json({ vehicles: await customerVehicles(client, Number(req.query.shop), Number(req.query.customerId)) });
+}));
+// Book a new appointment in Tekmetric (and optionally assign the tech on the board)
+app.post('/api/appointments', auth.require, userErrors(async (req, res) => {
+  const techId = req.body?.techId;
+  if (techId != null && techId !== '' && !(await techList(Number(req.body.shopId))).some((t) => t.id === Number(techId))) throw new UserError('That tech was not found at this shop.');
+  res.json(await bookAppointment(ctx(req), req.body ?? {}));
+}));
+// Reschedule (date / time / drop-off) or set status (NO_SHOW, CANCELED) on an appointment in Tekmetric
+app.patch('/api/appointments/:id', auth.require, userErrors(async (req, res) => {
+  res.json(await changeAppointment(ctx(req), Number(req.params.id), req.body ?? {}));
+}));
+// "Still coming": stop flagging this no-show today (board only)
+app.post('/api/noshow/keep', auth.require, userErrors(async (req, res) => {
+  const { shopId, date, appointmentId } = req.body ?? {};
+  if (!shopId || !isDate(date) || !appointmentId) throw new UserError('shopId, date and appointmentId are required');
+  await keepNoShow(ctx(req), Number(shopId), date, Number(appointmentId));
+  res.json({ ok: true });
+}));
 
 app.use(express.static(path.join(root, 'public')));
 

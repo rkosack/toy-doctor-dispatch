@@ -16,6 +16,10 @@ A dispatch board on top of Tekmetric for the Denver and Littleton shops.
 **Step 2 (availability)**
 - Each tech's header has an availability button: In (default), Out, Leaves early, Limit work, a note, and daily capacity (every day or today only)
 - Out / Leaves early / Limit work add a matching Tekmetric event ("OFF – Sam K.", "LEAVES 3:00 – Sam K.", "LIMIT 4h – Sam K."); setting In removes it. The board only changes events it created.
+- **Booking:** "+ Book appointment" (or click an open time in a tech's column) searches Tekmetric customers by name or phone, picks the vehicle, type of work (sets the color), concern, time, drop-off, estimated hours, tech and ride. The appointment is created in Tekmetric. Waiters are booked green (the API can't set "Stay with vehicle"). New customers are added in Tekmetric first.
+- **Rescheduling:** open an appointment card to change its date, time or drop-off, or drag it onto another day in the week strip. This moves the appointment in Tekmetric (drop-off moves with it). Undo is offered.
+- **No-shows:** 1 hour past an appointment with no arrival, a banner offers Mark no-show (sets NO_SHOW in Tekmetric and drops its hours), Reschedule, or Still coming (keeps it, stops asking today). Cancel appointment is in the card.
+- **Colors on reschedule:** Tekmetric reads colors back as hex but writes them by name. The first time an appointment is changed, the board runs a one-time color check (a short event a year out at 6:00 am, recolored through each color and deleted) and remembers the result, so moved appointments keep their color.
 - "On today" hides techs who are out; "Manage techs" picks who shows on the board and their usual capacity
 
 **Coming next:** the booking panel (new appointments from the board) and dismissing no-shows (step 3), then the Day – Service Advisor view.
@@ -68,5 +72,6 @@ Done once, with Rachel's Workspace admin account.
 - `server/mock.js`: demo data in Tekmetric's real response shapes
 - `server/auth.js`: Google sign-in and signed session cookie
 - `server/store.js`: assignments (JSON file locally, Firestore on Cloud Run)
+- `server/appointments.js`: booking, rescheduling, no-show and cancel in Tekmetric; customer and vehicle search; the color check
 - `server/sync.js`: writes the assigned tech onto the RO (fills blanks only, once per RO)
 - `public/`: the board page (plain HTML, CSS, JavaScript; no build step)
