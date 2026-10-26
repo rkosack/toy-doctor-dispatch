@@ -58,12 +58,15 @@ async function createFirestoreStore() {
   const { Firestore, FieldValue } = await import('@google-cloud/firestore');
   // FIRESTORE_DATABASE: the database ID created in Google Cloud (e.g. "dispatch"); omit for "(default)"
   const fsdb = new Firestore(process.env.FIRESTORE_DATABASE ? { databaseId: process.env.FIRESTORE_DATABASE } : {});
-  const A = fsdb.collection('assignments');
-  const S = fsdb.collection('synced');
-  const P = fsdb.collection('plans');
-  const T = fsdb.collection('techSettings');
-  const V = fsdb.collection('availability');
-  const M = fsdb.collection('meta');
+  // Ids are only unique within one Tekmetric environment, so production data is kept apart from sandbox tests
+  const suffix = process.env.TEKMETRIC_ENV === 'production' ? '-production' : '';
+  const col = (name) => fsdb.collection(name + suffix);
+  const A = col('assignments');
+  const S = col('synced');
+  const P = col('plans');
+  const T = col('techSettings');
+  const V = col('availability');
+  const M = col('meta');
   const key = (shopId, apptId) => `${shopId}_${apptId}`;
   return {
     async getAssignments(shopId, apptIds) {
