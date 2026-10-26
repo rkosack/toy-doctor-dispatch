@@ -53,7 +53,8 @@ function createFileStore(file) {
 
 async function createFirestoreStore() {
   const { Firestore, FieldValue } = await import('@google-cloud/firestore');
-  const fsdb = new Firestore();
+  // FIRESTORE_DATABASE: the database ID created in Google Cloud (e.g. "dispatch"); omit for "(default)"
+  const fsdb = new Firestore(process.env.FIRESTORE_DATABASE ? { databaseId: process.env.FIRESTORE_DATABASE } : {});
   const A = fsdb.collection('assignments');
   const S = fsdb.collection('synced');
   const P = fsdb.collection('plans');
