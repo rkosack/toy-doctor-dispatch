@@ -222,7 +222,7 @@ function queueCard(card) {
 
 function colHead(col) {
   if (col.type === 'unassigned') {
-    return `<div class="colhead un"><span class="nm" style="font-weight:600">Unassigned</span>
+    return `<div class="colhead un pin1"><span class="nm" style="font-weight:600">Unassigned</span>
       <span class="sub">${col.appts} appt${col.appts === 1 ? '' : 's'} · ${fmtH(col.active)}</span>
       <span class="sub">Click a card or drag it onto a tech at the time they'll work it. The tech is written to the RO when it opens.</span></div>`;
   }
@@ -263,14 +263,14 @@ function board(b) {
     : `<span class="muted">${c.type === 'unassigned' ? 'Not counted in load' : 'Nothing parked'}</span>`;
   return `<section class="board" aria-label="Technician dispatch board">
     <div class="grid" style="grid-template-columns:${template}">
-      <div style="border-bottom:1px solid var(--line);background:var(--soft)"></div>
+      <div class="pin0" style="border-bottom:1px solid var(--line);background:var(--soft)"></div>
       ${cols.map(colHead).join('')}
-      <div class="times" style="height:${height}px">${times}</div>
+      <div class="times pin0" style="height:${height}px">${times}</div>
       ${cols.map((c) => (c.type === 'unassigned'
-        ? `<div class="lane un queue" data-drop="unassigned" style="height:${height}px">${c.cards.length ? c.cards.map(queueCard).join('') : '<span class="muted" style="font-size:12px;padding:6px">Nothing unassigned</span>'}</div>`
+        ? `<div class="lane un queue pin1" data-drop="unassigned" style="height:${height}px">${c.cards.length ? c.cards.map(queueCard).join('') : '<span class="muted" style="font-size:12px;padding:6px">Nothing unassigned</span>'}</div>`
         : `<div class="lane ${c.out ? 'is-out' : ''}" data-drop="${c.id}" style="height:${height}px">${closedBand}${awayBand(c, open, end)}${nowLine}${c.cards.map((k) => cardHtml(k, c)).join('')}</div>`)).join('')}
-      <div class="parked-label">Parked</div>
-      ${cols.map((c) => `<div class="parked ${c.type === 'unassigned' ? 'un' : ''}">${parked(c)}</div>`).join('')}
+      <div class="parked-label pin0">Parked</div>
+      ${cols.map((c) => `<div class="parked ${c.type === 'unassigned' ? 'un pin1' : ''}">${parked(c)}</div>`).join('')}
     </div>
   </section>`;
 }

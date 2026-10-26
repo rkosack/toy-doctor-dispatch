@@ -194,3 +194,9 @@ dialog.assign.wide { width: min(560px, calc(100vw - 32px)); }
 .techrow { display: flex; align-items: center; gap: 10px; padding: 0 8px; border-radius: 8px; }
 .techrow:hover { background: var(--soft); }
 .techrow[hidden] { display: none; }
+
+/* time column and Unassigned stay in place while scrolling sideways through techs */
+.pin0 { position: sticky; left: 0; z-index: 6; }
+.pin1 { position: sticky; left: 64px; z-index: 5; box-shadow: 4px 0 6px -4px rgba(20,22,26,.18); }
+.colhead.un.pin1, .parked.un.pin1 { background: #FCF7F7; }
+.parked-label.pin0, .times.pin0 { background: var(--soft); }
