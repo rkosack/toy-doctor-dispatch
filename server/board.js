@@ -51,15 +51,15 @@ function roState(ro) {
 }
 
 // When the car is due in: Tekmetric's drop-off time if set (and on that day), else the appointment time.
-function dropHour(appt, date) {
+export function dropHour(appt, date) {
   const t = appt.dropoffTime && localDate(new Date(appt.dropoffTime), TZ) === date ? appt.dropoffTime : appt.startTime;
   return localHours(new Date(t), TZ);
 }
 
 // A waiter: Tekmetric's "Stay with vehicle", or green (Toy Doctor's waiter color; the API can't set "Stay").
-const isWaiter = (a) => a?.appointmentOption?.code === 'STAY' || colorCategory(a?.color) === 'green';
-const vehicleText = (v) => [v?.year, v?.model || v?.make].filter(Boolean).join(' ');
-const personName = (e) => (e ? `${e.firstName ?? ''} ${(e.lastName ?? '').slice(0, 1)}.`.trim() : '');
+export const isWaiter = (a) => a?.appointmentOption?.code === 'STAY' || colorCategory(a?.color) === 'green';
+export const vehicleText = (v) => [v?.year, v?.model || v?.make].filter(Boolean).join(' ');
+export const personName = (e) => (e ? `${e.firstName ?? ''} ${(e.lastName ?? '').slice(0, 1)}.`.trim() : '');
 const initials = (e) => `${(e.firstName ?? ' ')[0]}${(e.lastName ?? ' ')[0]}`.toUpperCase();
 
 export async function buildBoard(client, { shopId, date, now = new Date(), store = null, capacityOverrides = {} }) {
@@ -108,9 +108,17 @@ export async function buildBoard(client, { shopId, date, now = new Date(), store
   const synced = store ? await syncAssignments({ client, store, shopId, ros: dayROs }) : [];
   const assignments = store ? await store.getAssignments(shopId, dayAppts.filter((a) => !linked.has(a.id)).map((a) => a.id)) : new Map();
 
+  // ---- ROs waiting on the customer's OK (Day – Service Advisor view) ----
+  const authROs = wip.filter((ro) => {
+    if (ro.deletedDate || !RULES.authorization.has(norm(roLabel(ro)))) return false;
+    const appt = ro.appointmentId ? apptById.get(ro.appointmentId) : null;
+    const notArrivedToday = appt && localDate(new Date(appt.startTime), TZ) === date && appt.arrived !== true && appt.appointmentStatus !== 'ARRIVED';
+    return !notArrivedToday && localDate(new Date(ro.createdDate ?? now), TZ) <= date;
+  });
+
   // ---- names (customers, vehicles): from cache; anything missing loads in the background ----
   const custIds = new Set(); const vehIds = new Set();
-  for (const x of [...dayROs, ...dayAppts]) { if (x.customerId) custIds.add(x.customerId); if (x.vehicleId) vehIds.add(x.vehicleId); }
+  for (const x of [...dayROs, ...dayAppts, ...authROs]) { if (x.customerId) custIds.add(x.customerId); if (x.vehicleId) vehIds.add(x.vehicleId); }
   const custById = new Map(); const vehById = new Map();
   const missingC = []; const missingV = [];
   for (const id of custIds) { const c = client.peekCustomer(id); c ? custById.set(id, c) : missingC.push(id); }
@@ -194,6 +202,7 @@ export async function buildBoard(client, { shopId, date, now = new Date(), store
       label: arrived ? 'Arrived' : 'Not arrived', state: arrived ? 'arrived' : 'notArrived', counts: true, noShow,
       startHour: localHours(new Date(a.startTime), TZ), dropHour: dropHour(a, date), alsoOn: [],
       assignedTechId: techCol ? assigned.techId : null,
+      advisorId: assigned?.advisorId ?? null,
       startTime: a.startTime, rideOption: typeof a.rideOption === 'string' ? a.rideOption : a.rideOption?.code ?? null,
     };
     (techCol ?? columns.get('unassigned')).cards.push(card);
@@ -285,7 +294,47 @@ export async function buildBoard(client, { shopId, date, now = new Date(), store
   const waiters = customerAppts.filter(isWaiter).length;
   const unassigned = columns.get('unassigned');
 
+  // ---- Day – Service Advisor view: one column per advisor ----
+  // Today's customers on a timeline at their drop-off / waiter time, one card per RO or appointment,
+  // plus each advisor's ROs waiting on authorization.
+  const advisors = employees.filter((e) => !e.disabled && !e.canPerformWork && techSettings.get(e.id)?.show !== false);
+  const advCols = new Map([['unassigned', { id: 'unassigned', type: 'unassigned', name: 'Unassigned', cards: [], waiting: [] }]]);
+  for (const e of advisors) advCols.set(e.id, { id: e.id, type: 'advisor', name: personName(e), initials: initials(e), cards: [], waiting: [] });
+  const advCol = (id) => {
+    if (id && advCols.has(id)) return advCols.get(id);
+    const e = id && empById.get(id);
+    if (e) { advCols.set(e.id, { id: e.id, type: 'advisor', name: personName(e), initials: initials(e), cards: [], waiting: [] }); return advCols.get(e.id); }
+    return advCols.get('unassigned');
+  };
+  const techCards = out.flatMap((c) => [...c.cards, ...c.parked].map((k) => ({ ...k, techName: c.type === 'tech' ? c.name : null })));
+  const seenRO = new Set();
+  for (const k of techCards) {
+    if (k.dropHour == null) continue; // carry-over work isn't on the advisor's timeline
+    if (k.kind === 'ro') {
+      if (seenRO.has(k.roId)) continue; seenRO.add(k.roId);
+      const ro = roById.get(k.roId);
+      const techs = techCards.filter((x) => x.roId === k.roId).map((x) => x.techName).filter(Boolean);
+      advCol(ro?.serviceWriterId).cards.push({ ...k, key: `sa-ro-${k.roId}`, hours: round1(techCards.filter((x) => x.roId === k.roId).reduce((t, x) => t + x.hours, 0)), techs, advisorId: ro?.serviceWriterId ?? null });
+    } else advCol(k.advisorId).cards.push({ ...k, key: `sa-${k.key}`, techs: k.techName ? [k.techName] : [] });
+  }
+  for (const ro of authROs) {
+    const since = ro.updatedDate ?? ro.createdDate;
+    advCol(ro.serviceWriterId).waiting.push({ roId: ro.id, roNumber: ro.repairOrderNumber, ...who(ro), label: roLabel(ro), since,
+      hours: round1((ro.jobs ?? []).filter((j) => !j.archived).reduce((t, j) => t + (Number(j.laborHours) || 0), 0)) });
+  }
+  for (const c of advCols.values()) {
+    for (const k of c.cards) { k.top = k.dropHour; k.span = 1; }
+    c.cards.sort((x, y) => x.top - y.top);
+    const ends = [];
+    for (const k of c.cards) { let l = ends.findIndex((e) => e <= k.top + 0.001); if (l === -1) { l = ends.length; ends.push(0); } ends[l] = k.top + k.span; k.lane = l; }
+    c.lanes = Math.max(1, ends.length);
+    c.waiting.sort((x, y) => String(x.since).localeCompare(String(y.since)));
+    Object.assign(c, { appts: c.cards.length, waiters: c.cards.filter((k) => k.waiter).length, notArrived: c.cards.filter((k) => k.kind === 'appt' && k.state === 'notArrived').length });
+  }
+  const advisorView = { columns: [...advCols.values()].filter((c) => c.type === 'unassigned' || c.cards.length || c.waiting.length || advisors.some((e) => e.id === c.id)) };
+
   return {
+    advisorView,
     shopId: Number(shopId), date, isToday,
     nowHour: isToday ? localHours(now, TZ) : null,
     hours: (() => {

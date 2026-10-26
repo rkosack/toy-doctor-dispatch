@@ -5,6 +5,11 @@ A dispatch board on top of Tekmetric for the Denver and Littleton shops.
 **Writes to Tekmetric (only these):** when you assign a tech, the board sets that tech on the RO, and on any of its jobs with no tech. For a booked appointment that happens once the customer arrives and the RO opens. For an open RO it happens right away. It only fills blanks, so a tech someone already set in Tekmetric is never changed.
 
 **What's in step 1**
+- **Views:** Day – Technician, Day – Service Advisor, Week, Month (the last one used is remembered)
+- **Day – Service Advisor:** one column per advisor with today's customers at their drop-off / waiter time (one card per RO or appointment), and each advisor's ROs waiting on authorization (Pending Authorization / Estimating), oldest first. Pick an advisor on a booked appointment (click or drag); it's written to the RO's service writer when the RO opens, only if it has none. An open RO with no service writer gets it right away.
+- **Week:** each day's appointments by time with type color, tech and hours, and booked hours vs. tech capacity (Near full / Over). Drag a not-arrived appointment to another day to move it in Tekmetric; "+ Book" on any day.
+- **Month:** calendar with appointments and booked hours vs. capacity per day; click a day to open it.
+- Booking also picks the service advisor (defaults to whoever is signed in, if they're a Tekmetric employee)
 - Day – Technician board: one column per tech, 8:00–5:00 timeline, red line for now
 - Live RO cards with the Tekmetric label, colored by the appointment's color
 - Load per tech (sold hours vs. daily capacity), parts hold and offsite hours shown separately
@@ -72,6 +77,7 @@ Done once, with Rachel's Workspace admin account.
 - `server/mock.js`: demo data in Tekmetric's real response shapes
 - `server/auth.js`: Google sign-in and signed session cookie
 - `server/store.js`: assignments (JSON file locally, Firestore on Cloud Run)
+- `server/views.js`: Week and Month planners
 - `server/appointments.js`: booking, rescheduling, no-show and cancel in Tekmetric; customer and vehicle search; the color check
 - `server/sync.js`: writes the assigned tech onto the RO (fills blanks only, once per RO)
 - `public/`: the board page (plain HTML, CSS, JavaScript; no build step)

@@ -160,7 +160,8 @@ export async function bookAppointment(ctx, input) {
   const id = Number(res?.data);
   if (!id) throw new Error('Tekmetric did not return the new appointment id.');
   const techId = input.techId == null || input.techId === '' ? null : Number(input.techId);
-  await store.setAssignment(shopId, id, { techId, hours, by: user });
+  const advisorId = input.advisorId == null || input.advisorId === '' ? null : Number(input.advisorId);
+  await store.setAssignment(shopId, id, { techId, hours, advisorId, by: user });
   client.clearCache();
   return { ok: true, appointmentId: id, techId, hours };
 }

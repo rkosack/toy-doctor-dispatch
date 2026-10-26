@@ -3,7 +3,8 @@
 const app = document.getElementById('app');
 const HOUR = 88; // px per hour, matches --hour
 const REFRESH_MS = 60_000;
-const state = { user: null, shops: [], shopId: null, date: null, today: null, demo: false, board: null, error: null, timer: null, allTechs: false };
+const state = { user: null, shops: [], shopId: null, date: null, today: null, demo: false, board: null, error: null, timer: null, allTechs: false, view: 'tech', week: null, month: null };
+const VIEWS = { tech: 'Day – Technician', advisor: 'Day – Service Advisor', week: 'Week', month: 'Month' };
 
 const CAT = {
   red: 'L2 + Diag', yellow: 'L1 Diag', blue: 'Maintenance', green: 'Waiter', purple: 'Prev Recs / Specific Tech', other: 'Uncategorized',
@@ -79,6 +80,7 @@ async function boot() {
     state.shopId = s.shops.some((x) => x.id === saved) ? saved : s.shops[0]?.id;
     state.date = s.today;
     state.allTechs = recall('td-alltechs') === '1';
+    state.view = VIEWS[recall('td-view')] ? recall('td-view') : 'tech';
     await load();
     clearInterval(state.timer);
     state.timer = setInterval(() => { if (!document.hidden) load(true); }, REFRESH_MS);
@@ -86,22 +88,36 @@ async function boot() {
 }
 
 async function load(quiet) {
-  if (!quiet) { state.board = null; render(); }
+  const v = state.view;
+  const key = v === 'week' ? 'week' : v === 'month' ? 'month' : 'board';
+  if (!quiet) { state[key] = null; render(); }
   try {
-    state.board = await api(`/api/board?shop=${state.shopId}&date=${state.date}`);
+    const path = key === 'board' ? '/api/board' : `/api/${key}`;
+    const data = await api(`${path}?shop=${state.shopId}&date=${state.date}`);
+    if (state.view !== v) return; // switched views while loading
+    state[key] = data;
     state.error = null;
     clearTimeout(state.namesTimer);
-    if (state.board.namesPending) state.namesTimer = setTimeout(() => load(true), 8000); // names still loading
+    if (data.namesPending) state.namesTimer = setTimeout(() => load(true), 8000); // names still loading
   } catch (e) { if (e.message === 'signed out') return; state.error = e.message; }
   render();
 }
 
 function go(date) { state.date = date; load(); }
-function setShop(id) { state.shopId = id; remember('td-shop', String(id)); load(); }
+function setShop(id) { state.shopId = id; remember('td-shop', String(id)); state.board = null; load(); }
+function setView(v) { state.view = v; remember('td-view', v); load(); }
+// the day board is needed for booking (techs, advisors) even from the Week and Month views
+async function ensureBoard() {
+  if (state.board && state.board.date === state.date && state.board.shopId === state.shopId) return state.board;
+  state.board = await api(`/api/board?shop=${state.shopId}&date=${state.date}`);
+  return state.board;
+}
+const monthAdd = (d, n) => { const x = new Date(`${d.slice(0, 7)}-01T12:00:00Z`); x.setUTCMonth(x.getUTCMonth() + n); return x.toISOString().slice(0, 10); };
 
 // ---------- rendering ----------
 function render() {
   const b = state.board;
+  const v = state.view;
   // keep the sideways scroll on the board (and the page scroll) across redraws
   const prevLeft = document.querySelector('.board')?.scrollLeft ?? state.boardLeft ?? 0;
   const prevTop = window.scrollY;
@@ -109,7 +125,10 @@ function render() {
   <main>
     ${state.demo ? `<div class="banner demo"><b>Demo data</b><span class="muted">This is sample data so you can try the board. Real Tekmetric data shows once credentials are added.</span></div>` : ''}
     ${state.error ? `<div class="error" role="alert">${esc(state.error)}</div>` : ''}
-    ${b ? `${weekStrip(b)}${noShowBanners(b)}${summary(b)}${techToolbar(b)}${board(b)}
+    ${v === 'week' ? (state.week ? weekView(state.week) : state.error ? '' : '<div class="loading">Loading the week…</div>')
+    : v === 'month' ? (state.month ? monthView(state.month) : state.error ? '' : '<div class="loading">Loading the month…</div>')
+    : v === 'advisor' ? (b ? `${weekStrip(b)}${noShowBanners(b)}${advisorSummary(b)}${advisorBoard(b)}<p class="foot">Customers due today at their drop-off or waiter time, one card per RO or appointment. Pick an advisor on a booked appointment and it's written to the RO's service writer when the RO opens (only if it has none). Waiting on authorization lists each advisor's open ROs labeled ${esc('Pending Authorization')} or Estimating, oldest first. Updates every minute.</p>` : state.error ? '' : '<div class="loading">Loading the board…</div>')
+    : b ? `${weekStrip(b)}${noShowBanners(b)}${summary(b)}${techToolbar(b)}${board(b)}
       <p class="foot">Active load counts sold hours on ROs labeled All Parts Here or In Progress, or promised today. Today's not-arrived appointments always count (1.0 h unless hours were set when assigning). An assigned tech is written to the RO when it opens, only if the RO has no tech yet. Parts hold and offsite hours show separately. Pay period = sold hours on ROs marked Complete, 1st–15th and 16th–end of month. Pace = completed − days worked × daily capacity. Carry-over work starts in the afternoon (1:00) so mornings stay open for incoming cars; drag any card to the time a tech will work on it. That plan is for the board only and never moves the customer's appointment in Tekmetric. To move the appointment itself, open the card and change its time, or drag it onto a day above. Click an open time in a tech's column to book there. Updates every minute.</p>`
       : state.error ? '' : '<div class="loading">Loading the board…</div>'}
   </main>`;
@@ -130,21 +149,29 @@ function header() {
     <div class="brand"><div class="logo">TD</div><div><b>Toy Doctor</b><span>Dispatch</span></div></div>
     ${state.shops.length > 1 ? `<div class="seg" role="group" aria-label="Location">${state.shops.map((s) => `<button type="button" data-shop="${s.id}" aria-pressed="${s.id === state.shopId}">${esc(s.name)}</button>`).join('')}</div>` : ''}
     <nav class="views" aria-label="Views">
-      <button type="button" aria-current="page">Day – Technician</button>
-      <button type="button" disabled title="Coming in a later step">Day – Service Advisor</button>
-      <button type="button" disabled title="Coming in a later step">Week</button>
-      <button type="button" disabled title="Coming in a later step">Month</button>
+      ${Object.entries(VIEWS).map(([k, l]) => `<button type="button" data-view="${k}" ${state.view === k ? 'aria-current="page"' : ''}>${l}</button>`).join('')}
     </nav>
     <div class="datenav">
-      <button type="button" class="icon-btn" data-go="-1" aria-label="Previous day">${icon('M10 3L5 8l5 5')}</button>
-      <span class="date">${state.date ? esc(longDate(state.date)) : ''}</span>
-      <button type="button" class="icon-btn" data-go="1" aria-label="Next day">${icon('M6 3l5 5-5 5')}</button>
+      <button type="button" class="icon-btn" data-go="-1" aria-label="Previous ${unit()}">${icon('M10 3L5 8l5 5')}</button>
+      <span class="date">${state.date ? esc(dateLabel()) : ''}</span>
+      <button type="button" class="icon-btn" data-go="1" aria-label="Next ${unit()}">${icon('M6 3l5 5-5 5')}</button>
       <button type="button" class="btn" data-today ${state.date === state.today ? 'disabled' : ''}>Today</button>
       <button type="button" class="btn" data-refresh aria-label="Refresh">Refresh</button>
       <button type="button" class="btn primary" data-book>+ Book appointment</button>
     </div>
     ${state.user && !state.authCfg?.disabled ? `<div class="user"><span>${esc(state.user.name)}</span><button type="button" data-signout>Sign out</button></div>` : ''}
   </header>`;
+}
+
+const unit = () => ({ week: 'week', month: 'month' })[state.view] ?? 'day';
+function dateLabel() {
+  if (state.view === 'month') return new Date(`${state.date}T12:00:00`).toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+  if (state.view === 'week') { const mon = addDays(state.date, -((new Date(`${state.date}T12:00:00Z`).getUTCDay() + 6) % 7)); return `Week of ${shortDate(mon)}`; }
+  return longDate(state.date);
+}
+function step(n) {
+  if (state.view === 'month') return go(monthAdd(state.date, n));
+  go(addDays(state.date, state.view === 'week' ? 7 * n : n));
 }
 
 function weekStrip(b) {
@@ -480,7 +507,7 @@ async function changeAppt(card, change, message, undo) {
   } catch (e) { if (e.message !== 'signed out') toast(e.message, true); return false; }
 }
 const whenText = (date, hour) => `${date === state.date ? '' : `${shortDate(date)} `}${fmtHour(hour)}`;
-const wasAt = (card) => ({ date: state.date, startHour: card.startHour, dropHour: card.dropHour != null && card.dropHour < card.startHour ? card.dropHour : null });
+const wasAt = (card) => ({ date: card.date ?? state.date, startHour: card.startHour, dropHour: card.dropHour != null && card.dropHour < card.startHour ? card.dropHour : null });
 const markNoShow = (card) => changeAppt(card, { status: 'NO_SHOW' }, `${card.customer} marked no-show in Tekmetric · off today's hours`, { status: 'NONE' });
 const cancelAppt = (card) => changeAppt(card, { status: 'CANCELED' }, `${card.customer}'s appointment canceled in Tekmetric`, { status: 'NONE' });
 async function keepComing(card) {
@@ -581,7 +608,7 @@ function openBook(pre = {}) {
     </div></fieldset>
     <div class="field"><label for="bk-concern">Concern / work requested</label><textarea id="bk-concern" name="concern" rows="2" maxlength="500" required placeholder="e.g. Check engine light, 60k service"></textarea></div>
     <div class="row3">
-      <label>Date<input type="date" name="date" value="${state.date}" required></label>
+      <label>Date<input type="date" name="date" value="${pre.date ?? state.date}" required></label>
       <label>Appointment<input type="time" name="time" step="900" value="${toHM(startHour)}" required></label>
       <label>Drop-off <span class="muted">(optional)</span><input type="time" name="drop" step="900"></label>
     </div>
@@ -590,7 +617,10 @@ function openBook(pre = {}) {
     </div>
     <div class="row3">
       <label>Est. hours<input type="number" name="hours" min="0.1" max="24" step="0.1" value="1.0"></label>
-      <label style="grid-column:span 2">Technician<select name="tech">${techOpts(state.date)}</select></label>
+      <label style="grid-column:span 2">Technician<select name="tech">${techOpts(pre.date ?? state.date)}</select></label>
+    </div>
+    <div class="row3">
+      <label style="grid-column:span 2">Service advisor<select name="advisor"><option value="">Unassigned</option>${advisorList().map((a) => `<option value="${a.id}" ${a.id === (pre.advisorId ?? b.me) ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select></label>
     </div>
     <fieldset><legend>Ride</legend><div class="chips" style="padding-left:0">
       ${[['NONE', 'None'], ['LOANER', 'Loaner'], ['RIDE', 'Ride / shuttle']].map(([v, l], i) => `<label class="chipopt"><input type="radio" name="ride" value="${v}" ${i === 0 ? 'checked' : ''}><span>${l}</span></label>`).join('')}
@@ -657,7 +687,7 @@ function openBook(pre = {}) {
     const body = {
       shopId: state.shopId, customerId: customer.id, vehicleId: vehicle.id, title: `${customer.lastName} – ${vehicle.model}`,
       category: f.get('category'), concern: f.get('concern'), date: f.get('date'), startHour: start, dropHour: drop,
-      hours: Number(f.get('hours')), techId: f.get('tech') || null, rideOption: f.get('ride'), pickupHour: pick,
+      hours: Number(f.get('hours')), techId: f.get('tech') || null, advisorId: f.get('advisor') || null, rideOption: f.get('ride'), pickupHour: pick,
     };
     const btn = form.querySelector('[type=submit]'); btn.disabled = true; btn.textContent = 'Booking…';
     try {
@@ -671,6 +701,209 @@ function openBook(pre = {}) {
   });
   dlg.showModal();
   q.focus();
+}
+
+// ---------- Day – Service Advisor ----------
+const advisorList = () => (state.board?.advisorView?.columns ?? []).filter((c) => c.type === 'advisor');
+async function bookFrom(pre) {
+  try { await ensureBoard(); openBook(pre); } catch (e) { if (e.message !== 'signed out') toast(e.message, true); }
+}
+const sinceText = (iso) => {
+  if (!iso) return '';
+  const h = (Date.now() - Date.parse(iso)) / 3600_000;
+  return h < 1 ? `${Math.max(1, Math.round(h * 60))} min` : h < 24 ? `${Math.round(h)} h` : `${Math.round(h / 24)} d`;
+};
+
+function advisorSummary(b) {
+  const cols = b.advisorView.columns;
+  const all = cols.flatMap((c) => c.cards);
+  const waiting = cols.reduce((t, c) => t + c.waiting.length, 0);
+  const un = cols.find((c) => c.type === 'unassigned');
+  return `<section class="summary" aria-label="Advisor summary">
+    <div class="stat"><span class="k">Customers due</span><span class="v">${all.length}</span><span class="x">${all.filter((k) => k.waiter).length} waiters · ${all.filter((k) => k.kind === 'appt' && k.state === 'notArrived').length} not arrived</span></div>
+    <div class="stat"><span class="k">Waiting on authorization</span><span class="v" ${waiting ? 'style="color:var(--red)"' : ''}>${waiting}</span><span class="x">ROs to call on</span></div>
+    <div class="stat"><span class="k">No advisor yet</span><span class="v">${un.cards.length}</span><span class="x">${un.waiting.length ? `${un.waiting.length} waiting RO${un.waiting.length === 1 ? '' : 's'} too` : 'Click a card to assign'}</span></div>
+    <div class="legend">${['red', 'yellow', 'blue', 'green', 'purple'].map((c) => `<span class="chip" style="background:var(--c-${c}-bg);color:var(--c-${c}-tx)"><i style="background:var(--c-${c}-dot)"></i>${CAT[c]}</span>`).join('')}</div>
+  </section>`;
+}
+
+// SA cards: appointments can always get an advisor; an RO only if it has no service writer yet
+const saPickable = (k) => k.kind === 'appt' || (k.kind === 'ro' && !k.advisorId && k.state !== 'done');
+function saCard(k, col, start) {
+  const c = k.category; const width = 100 / col.lanes;
+  const status = k.noShow ? '<span class="status warn"><span class="t">No-show? 1 h past</span></span>'
+    : k.kind === 'appt' ? `<span class="status dashed"><span class="t">${esc(k.label)}${k.advisorId ? ' · sets RO advisor on arrival' : ''}</span></span>`
+    : `<span class="status"><i style="background:${statusDot(k)}"></i><span class="t">RO ${esc(k.roNumber)} · ${esc(k.label)}</span></span>`;
+  const attrs = saPickable(k) ? `role="button" tabindex="0" draggable="true" data-sa="${esc(k.key)}" aria-label="${esc(`Pick advisor for ${k.customer} · ${k.vehicle}`)}"` : '';
+  return `<div class="card ${k.state} ${k.noShow ? 'noshow' : ''}" ${attrs} data-key="${esc(k.key)}" style="top:${(k.top - start) * HOUR + 2}px;height:${k.span * HOUR - 4}px;left:calc(${k.lane * width}% + 6px);width:calc(${width}% - 12px);background:var(--c-${c}-bg);border-color:var(--c-${c}-bd)"
+    title="${esc(`${k.customer} · ${k.vehicle}\n${k.work}\n${k.techs.length ? `Tech: ${k.techs.join(', ')}` : 'No tech yet'} · ${k.hours} h`)}">
+    <div class="top t" style="color:var(--c-${c}-tx)"><i style="background:var(--c-${c}-dot)"></i>${k.waiter ? 'Waiting' : 'Drop-off'} ${fmtHour(k.dropHour)} · ${esc(CAT[c])}</div>
+    <div class="cust t">${esc(k.customer)} · ${esc(k.vehicle)}</div>
+    ${status}
+  </div>`;
+}
+
+function advisorBoard(b) {
+  const cols = b.advisorView.columns;
+  const tops = cols.flatMap((c) => c.cards.map((k) => [k.top, k.top + k.span]));
+  const start = Math.min(b.hours.open, ...tops.map(([t]) => Math.floor(t)));
+  const end = Math.max(b.hours.close, ...tops.map(([, e]) => Math.ceil(e)));
+  const height = (end - start) * HOUR;
+  const template = `64px ${cols.map((c) => `minmax(${c.lanes > 1 ? 200 + (Math.min(c.lanes, 3) - 1) * 110 : 220}px, ${Math.min(c.lanes, 3)}fr)`).join(' ')}`;
+  const nowLine = b.nowHour != null && b.nowHour >= start && b.nowHour <= end ? `<div class="now" style="top:${(b.nowHour - start) * HOUR}px" aria-hidden="true"></div>` : '';
+  const band = (end > b.hours.close ? `<div class="closed-band" style="top:${(b.hours.close - start) * HOUR}px;height:${(end - b.hours.close) * HOUR}px" aria-hidden="true"></div>` : '')
+    + (start < b.hours.open ? `<div class="closed-band" style="top:0;height:${(b.hours.open - start) * HOUR}px" aria-hidden="true"></div>` : '');
+  let times = ''; for (let h = start; h < end; h++) times += `<span style="top:${(h - start) * HOUR}px">${fmtHour(h)}</span>`;
+  const head = (c) => c.type === 'unassigned'
+    ? `<div class="colhead un ${'pin1'}"><span class="nm" style="font-weight:600">No advisor yet</span><span class="sub">${c.appts} customer${c.appts === 1 ? '' : 's'}</span><span class="sub">Click a card or drag it onto an advisor. It's written to the RO's service writer when the RO opens.</span></div>`
+    : `<div class="colhead"><div class="who"><div class="avatar">${esc(c.initials)}</div><div style="min-width:0"><span class="nm t" style="display:block">${esc(c.name)}</span><small>${c.appts} customer${c.appts === 1 ? '' : 's'} · ${c.waiters} waiter${c.waiters === 1 ? '' : 's'}</small></div>${c.waiting.length ? `<span class="pill over">${c.waiting.length} to call</span>` : ''}</div>
+      <span class="sub">${c.notArrived ? `${c.notArrived} not arrived yet` : 'Everyone has arrived'}</span></div>`;
+  const waiting = (c) => c.waiting.length
+    ? c.waiting.map((w) => `<div class="item wait" title="${esc(`${w.customer} · ${w.vehicle} — ${w.label}`)}"><i></i><span class="t"><b>RO ${esc(w.roNumber)}</b> · ${esc(w.customer)} · ${esc(w.vehicle)}</span><span class="since">${sinceText(w.since)}</span></div>`).join('')
+    : '<span class="muted">Nothing waiting</span>';
+  return `<section class="board" aria-label="Service advisor board">
+    <div class="grid" style="grid-template-columns:${template}">
+      <div class="pin0" style="border-bottom:1px solid var(--line);background:var(--soft)"></div>
+      ${cols.map(head).join('')}
+      <div class="times pin0" style="height:${height}px">${times}</div>
+      ${cols.map((c) => `<div class="lane ${c.type === 'unassigned' ? 'un pin1' : ''}" data-sadrop="${c.id}" style="height:${height}px">${band}${nowLine}${c.cards.map((k) => saCard(k, c, start)).join('')}</div>`).join('')}
+      <div class="parked-label pin0">Waiting on<br>authorization</div>
+      ${cols.map((c) => `<div class="parked ${c.type === 'unassigned' ? 'un pin1' : ''}">${waiting(c)}</div>`).join('')}
+    </div>
+  </section>`;
+}
+
+async function setAdvisor(k, advisorId) {
+  const body = k.kind === 'appt' ? { shopId: state.shopId, appointmentId: k.appointmentId, advisorId } : { shopId: state.shopId, roId: k.roId, advisorId };
+  try {
+    await api('/api/advisor', json('POST', body));
+    const name = advisorList().find((a) => a.id === advisorId)?.name;
+    state.flash = k.key;
+    toast(!advisorId ? `${k.customer}: no advisor` : k.kind === 'ro' ? `RO ${k.roNumber}: service writer set to ${name} in Tekmetric` : `${k.customer} → ${name} · RO advisor is set when it opens`);
+    await load(true);
+  } catch (e) { if (e.message !== 'signed out') toast(e.message, true); }
+}
+
+function openAdvisorPick(k) {
+  const dlg = document.createElement('dialog');
+  dlg.className = 'assign';
+  dlg.innerHTML = `<form method="dialog">
+    <h2>${esc(k.customer)} · ${esc(k.vehicle)}</h2>
+    <p class="muted" style="margin:0">${esc(k.work)}${k.techs.length ? ` · Tech: ${esc(k.techs.join(', '))}` : ''}</p>
+    <fieldset><legend>Service advisor</legend>
+      ${advisorList().map((a) => `<label class="opt"><input type="radio" name="adv" value="${a.id}" ${a.id === k.advisorId ? 'checked' : ''} required><span class="t" style="flex:1">${esc(a.name)}</span><span class="muted" style="font-size:12px">${a.appts} today</span></label>`).join('')}
+    </fieldset>
+    <p class="note">${k.kind === 'appt' ? 'Written to the RO\'s service writer in Tekmetric when the RO opens (only if it has none).' : `Sets the service writer on RO ${esc(k.roNumber)} in Tekmetric now.`}</p>
+    <div class="actions">
+      ${k.kind === 'appt' ? '<button type="button" class="btn" data-openappt>Tech, time & no-show…</button>' : ''}
+      ${k.kind === 'appt' && k.advisorId ? '<button type="button" class="btn" data-clear>No advisor</button>' : ''}
+      <span style="flex:1"></span>
+      <button type="button" class="btn" data-cancel>Cancel</button><button type="submit" class="btn primary">Save</button>
+    </div>
+  </form>`;
+  document.body.appendChild(dlg);
+  const close = () => { dlg.close(); dlg.remove(); };
+  dlg.querySelector('[data-cancel]').addEventListener('click', close);
+  dlg.addEventListener('cancel', () => dlg.remove());
+  dlg.querySelector('[data-clear]')?.addEventListener('click', () => { close(); setAdvisor(k, null); });
+  dlg.querySelector('[data-openappt]')?.addEventListener('click', () => { close(); const card = findCard(k.key.replace(/^sa-/, '')); if (card) openAssign(card); });
+  dlg.querySelector('form').addEventListener('submit', (e) => { e.preventDefault(); const id = Number(new FormData(e.target).get('adv')); close(); if (id !== k.advisorId) setAdvisor(k, id); });
+  dlg.showModal();
+}
+
+// ---------- Week ----------
+function loadBar(d) {
+  const pct = d.capacity ? Math.min(100, Math.round((d.hours / d.capacity) * 100)) : 0;
+  return `<div class="bar" role="img" aria-label="${pct}% of capacity booked"><div class="${d.status === 'over' ? 'over' : ''}" style="width:${pct}%"></div></div>`;
+}
+function weekView(w) {
+  const t = w.totals;
+  const pct = t.capacity ? Math.round((t.hours / t.capacity) * 100) : 0;
+  return `<section class="summary" aria-label="Week summary">
+      <div class="stat"><span class="k">Appointments</span><span class="v">${t.appointments}</span><span class="x">${t.waiters} waiters</span></div>
+      <div class="stat"><span class="k">Booked hours</span><span class="v">${t.hours.toFixed(1)} <small>/ ${t.capacity.toFixed(1)} h</small></span><span class="x">${pct}% of tech capacity</span></div>
+      <div class="legend">${['red', 'yellow', 'blue', 'green', 'purple'].map((c) => `<span class="chip" style="background:var(--c-${c}-bg);color:var(--c-${c}-tx)"><i style="background:var(--c-${c}-dot)"></i>${CAT[c]}</span>`).join('')}</div>
+    </section>
+    <section class="weekview" aria-label="Week planner">${w.days.map((d) => d.closed && !d.count ? `<div class="wday closed"><div class="whead"><span class="d">${esc(dayName(d.date))}</span><span class="muted">Closed</span></div></div>` : `
+      <div class="wday ${d.date === w.today ? 'today' : ''}" data-wdrop="${d.date}">
+        <div class="whead">
+          <button type="button" class="dlink" data-openday="${d.date}">${esc(longDate(d.date))}</button>
+          <div class="wnums"><span class="n">${d.count} <small>appts</small></span><span class="pill ${d.status}">${d.hours.toFixed(1)} / ${d.capacity.toFixed(1)} h</span></div>
+          ${loadBar(d)}
+          <span class="sub">${d.waiters} waiter${d.waiters === 1 ? '' : 's'}${d.status === 'over' ? ' · <b class="heavy">Over capacity</b>' : d.status === 'near' ? ' · <b class="heavy">Near full</b>' : ''}${d.out.length ? ` · Out: ${esc(d.out.join(', '))}` : ''}</span>
+          <button type="button" class="btn small" data-bookday="${d.date}">+ Book</button>
+        </div>
+        <div class="wlist">${d.appts.length ? d.appts.map((a) => `
+          <div class="qcard ${a.arrived ? 'arrived' : ''}" role="button" tabindex="0" draggable="${!a.arrived}" data-wcard="${esc(a.key)}" data-date="${d.date}" style="background:var(--c-${a.category}-bg);border-color:var(--c-${a.category}-bd)" title="${esc(`${a.customer} · ${a.vehicle}\n${a.work}`)}">
+            <div class="top t" style="color:var(--c-${a.category}-tx)"><i style="background:var(--c-${a.category}-dot)"></i>${a.waiter ? 'Waiting' : 'Drop-off'} ${fmtHour(a.dropHour)}${a.dropHour !== a.startHour ? ` · appt ${fmtHour(a.startHour)}` : ''}</div>
+            <div class="cust t">${esc(a.customer)} · ${esc(a.vehicle)}</div>
+            <div class="work t">${a.tech ? esc(a.tech) : '<span style="color:var(--red)">No tech</span>'} · ${a.hours.toFixed(1)} h${a.hoursEstimated ? ' est.' : ''}${a.roNumber ? ` · RO ${esc(a.roNumber)}` : ''}</div>
+          </div>`).join('') : '<span class="muted" style="font-size:12px;padding:4px">No appointments</span>'}</div>
+      </div>`).join('')}</section>
+    <p class="foot">Booked hours = sold hours on the RO once it's open, otherwise the hours set when booking or assigning (1.0 h if none). Capacity = each tech's daily hours, minus Out / Leaves early / Limit work for that day. Drag a not-arrived appointment to another day to move it in Tekmetric (same time). Click a day to open it.</p>`;
+}
+
+// ---------- Month ----------
+function monthView(m) {
+  const t = m.totals;
+  const pct = t.capacity ? Math.round((t.hours / t.capacity) * 100) : 0;
+  const names = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  return `<section class="summary" aria-label="Month summary">
+      <div class="stat"><span class="k">Appointments</span><span class="v">${t.appointments}</span><span class="x">${t.waiters} waiters</span></div>
+      <div class="stat"><span class="k">Booked hours</span><span class="v">${t.hours.toFixed(1)} <small>/ ${t.capacity.toFixed(1)} h</small></span><span class="x">${pct}% of tech capacity</span></div>
+    </section>
+    <section class="month" aria-label="Month calendar">
+      ${names.map((n) => `<div class="mname">${n}</div>`).join('')}
+      ${m.days.map((d) => `<button type="button" class="mday ${d.inMonth ? '' : 'out'} ${d.closed ? 'closed' : ''} ${d.date === m.today ? 'today' : ''} ${d.status}" data-openday="${d.date}" aria-label="${esc(`${longDate(d.date)}: ${d.closed ? 'closed' : `${d.count} appointments, ${d.hours} of ${d.capacity} hours booked`}`)}">
+        <span class="dn">${Number(d.date.slice(8))}</span>
+        ${d.closed && !d.count ? '' : `<span class="n">${d.count} <small>appts</small></span>${loadBar(d)}<span class="s">${d.hours.toFixed(0)} / ${d.capacity.toFixed(0)} h${d.status === 'over' ? ' · <b class="heavy">Over</b>' : d.status === 'near' ? ' · <b class="heavy">Near full</b>' : ''}</span>`}
+      </button>`).join('')}
+    </section>
+    <p class="foot">Each day: appointments booked, and booked hours vs. tech capacity (bar turns red when over). Click a day to open it.</p>`;
+}
+
+function bindViews() {
+  // advisor view: click or drag a card onto an advisor
+  app.querySelectorAll('[data-sa]').forEach((el) => {
+    const k = () => state.board.advisorView.columns.flatMap((c) => c.cards).find((x) => x.key === el.dataset.sa);
+    el.addEventListener('click', () => { const x = k(); if (x) openAdvisorPick(x); });
+    el.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); const x = k(); if (x) openAdvisorPick(x); } });
+    el.addEventListener('dragstart', (e) => { state.drag = { sa: el.dataset.sa }; e.dataTransfer.setData('text/plain', el.dataset.sa); e.dataTransfer.effectAllowed = 'move'; });
+  });
+  app.querySelectorAll('[data-sadrop]').forEach((lane) => {
+    lane.addEventListener('dragover', (e) => { if (!state.drag?.sa) return; e.preventDefault(); lane.classList.add('drop'); });
+    lane.addEventListener('dragleave', () => lane.classList.remove('drop'));
+    lane.addEventListener('drop', (e) => {
+      lane.classList.remove('drop'); if (!state.drag?.sa) return; e.preventDefault();
+      const k = state.board.advisorView.columns.flatMap((c) => c.cards).find((x) => x.key === state.drag.sa); state.drag = null;
+      if (!k) return;
+      const id = lane.dataset.sadrop === 'unassigned' ? null : Number(lane.dataset.sadrop);
+      if (id === (k.advisorId ?? null)) return;
+      if (id == null && k.kind === 'ro') return toast('An open RO keeps its service writer in Tekmetric. Change it there.', true);
+      setAdvisor(k, id);
+    });
+  });
+  // week and month: open a day, book on a day, drag to another day
+  app.querySelectorAll('[data-openday]').forEach((el) => el.addEventListener('click', () => { state.date = el.dataset.openday; setView('tech'); }));
+  app.querySelectorAll('[data-bookday]').forEach((el) => el.addEventListener('click', () => { const d = el.dataset.bookday; const keep = state.date; state.date = d; bookFrom({ date: d }).finally(() => { state.date = keep; }); }));
+  const wcard = (el) => state.week?.days.flatMap((d) => d.appts.map((a) => ({ ...a, date: d.date, kind: 'appt' }))).find((a) => a.key === el.dataset.wcard);
+  app.querySelectorAll('[data-wcard]').forEach((el) => {
+    const open = () => { state.date = el.dataset.date; state.flash = el.dataset.wcard; setView('tech'); };
+    el.addEventListener('click', open);
+    el.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
+    el.addEventListener('dragstart', (e) => { state.drag = { week: el.dataset.wcard }; e.dataTransfer.setData('text/plain', el.dataset.wcard); e.dataTransfer.effectAllowed = 'move'; });
+  });
+  app.querySelectorAll('[data-wdrop]').forEach((col) => {
+    col.addEventListener('dragover', (e) => { if (!state.drag?.week) return; e.preventDefault(); col.classList.add('drop'); });
+    col.addEventListener('dragleave', (e) => { if (!col.contains(e.relatedTarget)) col.classList.remove('drop'); });
+    col.addEventListener('drop', (e) => {
+      col.classList.remove('drop'); if (!state.drag?.week) return; e.preventDefault();
+      const el = app.querySelector(`[data-wcard="${state.drag.week}"]`); state.drag = null;
+      const a = el && wcard(el); const date = col.dataset.wdrop;
+      if (!a || a.date === date) return;
+      changeAppt(a, { date }, `${a.customer} moved to ${longDate(date)} at ${fmtHour(a.startHour)} in Tekmetric`, wasAt(a));
+    });
+  });
 }
 
 function toast(msg, isError, action) {
@@ -748,16 +981,18 @@ function bind() {
   });
   app.querySelectorAll('[data-shop]').forEach((el) => el.addEventListener('click', () => setShop(Number(el.dataset.shop))));
   app.querySelectorAll('[data-date]').forEach((el) => el.addEventListener('click', () => go(el.dataset.date)));
-  app.querySelectorAll('[data-go]').forEach((el) => el.addEventListener('click', () => go(addDays(state.date, Number(el.dataset.go)))));
+  app.querySelectorAll('[data-go]').forEach((el) => el.addEventListener('click', () => step(Number(el.dataset.go))));
+  app.querySelectorAll('[data-view]').forEach((el) => el.addEventListener('click', () => setView(el.dataset.view)));
   app.querySelector('[data-today]')?.addEventListener('click', () => go(state.today));
   app.querySelector('[data-refresh]')?.addEventListener('click', () => load(true));
   app.querySelector('[data-signout]')?.addEventListener('click', signOut);
   bindBooking();
+  bindViews();
 }
 
 // booking, no-show buttons, and moving appointments to another day
 function bindBooking() {
-  app.querySelector('[data-book]')?.addEventListener('click', () => openBook());
+  app.querySelector('[data-book]')?.addEventListener('click', () => bookFrom({}));
   app.querySelectorAll('[data-ns]').forEach((el) => el.addEventListener('click', () => {
     const card = findCard(`appt-${el.dataset.id}`);
     if (!card) return toast('That appointment is no longer on the board. Refresh and try again.', true);

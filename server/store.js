@@ -19,7 +19,7 @@ function createFileStore(file) {
       for (const id of apptIds) { const a = db.assignments[key(shopId, id)]; if (a) out.set(id, a); }
       return out;
     },
-    async setAssignment(shopId, apptId, value) { db.assignments[key(shopId, apptId)] = { ...value, at: new Date().toISOString() }; save(); },
+    async setAssignment(shopId, apptId, value) { const k = key(shopId, apptId); db.assignments[k] = { ...(db.assignments[k] ?? {}), ...value, at: new Date().toISOString() }; save(); }, // merges (tech and advisor are set separately)
     async removeAssignment(shopId, apptId) { delete db.assignments[key(shopId, apptId)]; save(); },
     async getSynced(roIds) { return new Set(roIds.filter((id) => db.synced[id])); },
     // planned start times on the board (per shop, per day): { cardKey: hour }
@@ -73,7 +73,7 @@ async function createFirestoreStore() {
       snaps.forEach((s, i) => { if (s.exists) out.set(apptIds[i], s.data()); });
       return out;
     },
-    async setAssignment(shopId, apptId, value) { await A.doc(key(shopId, apptId)).set({ ...value, at: new Date().toISOString() }); },
+    async setAssignment(shopId, apptId, value) { await A.doc(key(shopId, apptId)).set({ ...value, at: new Date().toISOString() }, { merge: true }); },
     async removeAssignment(shopId, apptId) { await A.doc(key(shopId, apptId)).delete(); },
     async getSynced(roIds) {
       if (!roIds.length) return new Set();

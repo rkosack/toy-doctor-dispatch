@@ -17,9 +17,16 @@ export async function syncAssignments({ client, store, shopId, ros, log = consol
 
   for (const ro of pending) {
     const a = assignments.get(ro.appointmentId);
-    if (!a?.techId) continue;
-    const result = { roId: ro.id, roNumber: ro.repairOrderNumber, techId: a.techId, roTech: 'kept', jobs: 0 };
+    if (!a?.techId && !a?.advisorId) continue;
+    const result = { roId: ro.id, roNumber: ro.repairOrderNumber, techId: a.techId ?? null, roTech: 'kept', jobs: 0, advisor: 'kept' };
     try {
+      // the advisor picked on the board becomes the RO's service writer, if it has none
+      if (a.advisorId && !ro.serviceWriterId) {
+        await client.patchRepairOrder(ro.id, { serviceWriterId: a.advisorId });
+        ro.serviceWriterId = a.advisorId;
+        result.advisor = 'set';
+      }
+      if (!a.techId) { await store.markSynced(ro.id, { techId: null, advisorId: a.advisorId, appointmentId: ro.appointmentId, advisor: result.advisor, assignedBy: a.by ?? null }); results.push(result); continue; }
       if (!ro.technicianId) {
         await client.patchRepairOrder(ro.id, { technicianId: a.techId });
         ro.technicianId = a.techId;
@@ -31,13 +38,13 @@ export async function syncAssignments({ client, store, shopId, ros, log = consol
         job.technicianId = a.techId;
         result.jobs++;
       }
-      await store.markSynced(ro.id, { techId: a.techId, appointmentId: ro.appointmentId, roTech: result.roTech, jobs: result.jobs, assignedBy: a.by ?? null });
+      await store.markSynced(ro.id, { techId: a.techId, advisorId: a.advisorId ?? null, appointmentId: ro.appointmentId, roTech: result.roTech, jobs: result.jobs, advisor: result.advisor, assignedBy: a.by ?? null });
       results.push(result);
     } catch (e) {
       log.error?.(`Could not set tech on RO ${ro.repairOrderNumber}: ${e.message}`); // tried again on the next refresh
     }
   }
-  if (results.some((r) => r.roTech === 'set' || r.jobs)) client.clearCache();
+  if (results.some((r) => r.roTech === 'set' || r.jobs || r.advisor === 'set')) client.clearCache();
   return results;
 }
 

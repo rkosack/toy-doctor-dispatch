@@ -9,6 +9,7 @@ import { createTekmetricClient } from './tekmetric.js';
 import { createMockClient, demoNow } from './mock.js';
 import { createAuth } from './auth.js';
 import { buildBoard } from './board.js';
+import { buildMonth, buildWeek } from './views.js';
 import { settings } from './config.js';
 import { localDate } from './time.js';
 import { createStore } from './store.js';
@@ -65,9 +66,25 @@ app.get('/api/board', auth.require, async (req, res, next) => {
     const shopId = Number(req.query.shop);
     const date = /^\d{4}-\d{2}-\d{2}$/.test(req.query.date ?? '') ? req.query.date : localDate(now(), settings.timeZone);
     if (!shopId) return res.status(400).json({ error: 'shop is required' });
-    res.json(await buildBoard(client, { shopId, date, now: now(), store }));
+    const b = await buildBoard(client, { shopId, date, now: now(), store });
+    // the signed-in person's Tekmetric employee id (default advisor when booking)
+    const email = (req.user?.email ?? '').toLowerCase();
+    b.me = email ? (await client.getEmployees(shopId)).find((e) => (e.email ?? '').toLowerCase() === email && !e.disabled)?.id ?? null : null;
+    res.json(b);
   } catch (e) { next(e); }
 });
+
+// Week and Month planners
+for (const [route, build] of [['/api/week', buildWeek], ['/api/month', buildMonth]]) {
+  app.get(route, auth.require, async (req, res, next) => {
+    try {
+      const shopId = Number(req.query.shop);
+      const date = /^\d{4}-\d{2}-\d{2}$/.test(req.query.date ?? '') ? req.query.date : localDate(now(), settings.timeZone);
+      if (!shopId) return res.status(400).json({ error: 'shop is required' });
+      res.json({ ...(await build(client, { shopId, date, store })), today: localDate(now(), settings.timeZone) });
+    } catch (e) { next(e); }
+  });
+}
 
 // Assign a booked appointment (stored; written to the RO on arrival) or an open RO (written now).
 app.post('/api/assign', auth.require, async (req, res, next) => {
@@ -90,6 +107,26 @@ app.post('/api/assign', auth.require, async (req, res, next) => {
     const ro = ros.find((r) => r.id === Number(roId));
     if (!ro) return res.status(404).json({ error: 'That RO is no longer open.' });
     res.json({ ok: true, ...(await assignOpenRO({ client, ro, techId })) });
+  } catch (e) { next(e); }
+});
+
+// Pick the service advisor: stored for a booked appointment (written to the RO's service writer when it
+// opens, blanks only), or written now to an open RO that has no service writer yet.
+app.post('/api/advisor', auth.require, async (req, res, next) => {
+  try {
+    const { shopId, appointmentId, roId } = req.body ?? {};
+    const advisorId = req.body?.advisorId == null || req.body.advisorId === '' ? null : Number(req.body.advisorId);
+    if (!shopId || (!appointmentId && !roId)) return res.status(400).json({ error: 'shopId and appointmentId or roId are required' });
+    if (advisorId != null && !(await client.getEmployees(shopId)).some((e) => e.id === advisorId && !e.disabled)) return res.status(400).json({ error: 'That advisor was not found at this shop.' });
+    if (appointmentId) { await store.setAssignment(Number(shopId), Number(appointmentId), { advisorId, by: req.user.email }); return res.json({ ok: true }); }
+    if (advisorId == null) return res.status(400).json({ error: 'Pick an advisor for this RO.' });
+    const ros = (await Promise.all([1, 2].map((st) => client.getRepairOrders(shopId, { repairOrderStatusId: String(st) })))).flat();
+    const ro = ros.find((r) => r.id === Number(roId));
+    if (!ro) return res.status(404).json({ error: 'That RO is no longer open.' });
+    if (ro.serviceWriterId && ro.serviceWriterId !== advisorId) return res.status(400).json({ error: `RO ${ro.repairOrderNumber} already has a service writer in Tekmetric. Change it there.` });
+    await client.patchRepairOrder(ro.id, { serviceWriterId: advisorId });
+    client.clearCache();
+    res.json({ ok: true });
   } catch (e) { next(e); }
 });
 

@@ -40,6 +40,8 @@ export const settings = {
     offsite: ['Off Site-Parts Ordered', 'Off Site -Appt. Needed', 'Scheduled! Off Site'],
     // finished work
     done: ['Complete-In QC'],
+    // Day – Service Advisor view: ROs waiting on the customer's OK (listed under each advisor)
+    authorization: ['Pending Authorization', 'Estimating'],
     // everything else (Estimating, Pending Authorization, *MAIN CONCERN IN*, NEEDS DEPOSIT, Warranty_)
     // waits on the customer or the shop: not counted
   },
