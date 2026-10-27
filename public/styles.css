@@ -287,3 +287,10 @@ dialog.assign fieldset[hidden], dialog.assign input[hidden] { display: none; }
   .mday { min-height: 70px; padding: 6px; }
   .mday .n small, .mday .s { display: none; }
 }
+
+/* The board scrolls inside its own window, so the sideways scrollbar is always at the bottom of the
+   screen, and the tech / advisor headers stay at the top while scrolling down the day. */
+.board { overflow: auto; position: sticky; top: calc(var(--hdr, 70px) + 8px); max-height: calc(100vh - var(--hdr, 70px) - 16px); max-height: calc(100dvh - var(--hdr, 70px) - 16px); overscroll-behavior: contain; }
+.colhead { position: sticky; top: 0; z-index: 6; background: #fff; }
+.colhead.un.pin1 { top: 0; z-index: 8; }
+.corner { position: sticky; top: 0; left: 0; z-index: 9; background: var(--soft); border-bottom: 1px solid var(--line); }

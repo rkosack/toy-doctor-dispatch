@@ -120,6 +120,7 @@ function render() {
   const v = state.view;
   // keep the sideways scroll on the board (and the page scroll) across redraws
   const prevLeft = document.querySelector('.board')?.scrollLeft ?? state.boardLeft ?? 0;
+  const prevBoardTop = document.querySelector('.board')?.scrollTop ?? state.boardTop ?? null;
   const prevTop = window.scrollY;
   app.innerHTML = `${header()}
   <main>
@@ -129,19 +130,26 @@ function render() {
     : v === 'month' ? (state.month ? monthView(state.month) : state.error ? '' : '<div class="loading">Loading the month…</div>')
     : v === 'advisor' ? (b ? `${weekStrip(b)}${noShowBanners(b)}${advisorSummary(b)}${advisorBoard(b)}<p class="foot">Customers due today at their drop-off or waiter time, one card per RO or appointment. Pick an advisor on a booked appointment and it's written to the RO's service writer when the RO opens (only if it has none). Waiting on authorization lists each advisor's open ROs labeled Pending Authorization, Estimating or NEEDS DEPOSIT, oldest first. Updates every minute.</p>` : state.error ? '' : '<div class="loading">Loading the board…</div>')
     : b ? `${weekStrip(b)}${noShowBanners(b)}${summary(b)}${techToolbar(b)}${board(b)}
-      <p class="foot">Active load counts sold hours on ROs labeled All Parts Here or In Progress, or promised today. Today's not-arrived appointments always count (1.0 h unless hours were set when assigning). An assigned tech is written to the RO when it opens, only if the RO has no tech yet. Parts hold and offsite hours show separately. Pay period = sold hours on ROs marked Complete, 1st–15th and 16th–end of month. Pace = completed − days worked × daily capacity. Carry-over work starts in the afternoon (1:00) so mornings stay open for incoming cars; drag any card to the time a tech will work on it. That plan is for the board only and never moves the customer's appointment in Tekmetric. To move the appointment itself, open the card and change its time, or drag it onto a day above. Click an open time in a tech's column to book there. Updates every minute.</p>`
+      <p class="foot">Active load counts sold hours on ROs labeled All Parts Here or In Progress, or promised today. Today's not-arrived appointments always count (1.0 h unless hours were set when assigning). An assigned tech is written to the RO when it opens, only if the RO has no tech yet. Dragging an open RO to another tech (or picking one on the card) moves that tech's jobs on it in Tekmetric right away, with Undo. Parts hold and offsite hours show separately. Pay period = sold hours on ROs marked Complete, 1st–15th and 16th–end of month. Pace = completed − days worked × daily capacity. Carry-over work starts in the afternoon (1:00) so mornings stay open for incoming cars; drag any card to the time a tech will work on it. That plan is for the board only and never moves the customer's appointment in Tekmetric. To move the appointment itself, open the card and change its time, or drag it onto a day above. Click an open time in a tech's column to book there. Updates every minute.</p>`
       : state.error ? '' : '<div class="loading">Loading the board…</div>'}
   </main>`;
   bind();
+  // the board sits just below the top menu, whatever its height (it wraps on narrower screens)
+  document.documentElement.style.setProperty('--hdr', `${document.querySelector('header')?.offsetHeight ?? 70}px`);
   const boardEl = document.querySelector('.board');
   if (boardEl) {
     boardEl.scrollLeft = prevLeft;
-    boardEl.addEventListener('scroll', () => { state.boardLeft = boardEl.scrollLeft; }, { passive: true });
+    // first time a day is shown: start the board a little above the red "now" line (or at opening time)
+    const dayKey = `${state.view}-${state.shopId}-${state.date}`;
+    if (state.scrolledFor !== dayKey) {
+      state.scrolledFor = dayKey;
+      const nowEl = boardEl.querySelector('.now');
+      boardEl.scrollTop = nowEl ? Math.max(0, nowEl.offsetTop - 2.5 * HOUR) : 0;
+    } else if (prevBoardTop != null) boardEl.scrollTop = prevBoardTop;
+    boardEl.addEventListener('scroll', () => { state.boardLeft = boardEl.scrollLeft; state.boardTop = boardEl.scrollTop; }, { passive: true });
   }
   window.scrollTo(0, prevTop);
   flashCard();
-  const now = document.querySelector('.now');
-  if (now && !state.scrolled) { state.scrolled = true; }
 }
 
 function header() {
@@ -208,7 +216,8 @@ function summary(b) {
 }
 
 // Which cards can be assigned: booked appointments (no RO yet) and open ROs with no tech.
-const canAssign = (card) => card.kind === 'appt' || (card.kind === 'ro' && !card.assignedTechId && card.state !== 'done');
+// Which cards can be moved between techs: booked appointments, and open ROs (written to Tekmetric right away)
+const canAssign = (card) => card.kind === 'appt' || (card.kind === 'ro' && card.state !== 'done');
 function assignAttrs(card) {
   if (!canAssign(card)) return '';
   const who = `${card.customer} · ${card.vehicle}`;
@@ -309,7 +318,7 @@ function board(b) {
     : `<span class="muted">${c.type === 'unassigned' ? 'Not counted in load' : 'Nothing parked'}</span>`;
   return `<section class="board" aria-label="Technician dispatch board">
     <div class="grid" style="grid-template-columns:${template}">
-      <div class="pin0" style="border-bottom:1px solid var(--line);background:var(--soft)"></div>
+      <div class="pin0 corner"></div>
       ${cols.map(colHead).join('')}
       <div class="times pin0" style="height:${height}px">${times}</div>
       ${cols.map((c) => (c.type === 'unassigned'
@@ -478,19 +487,27 @@ async function plan(key, hour) {
   await api('/api/plan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ shopId: state.shopId, date: state.date, key, hour }) });
 }
 
-async function assign(card, techId, hours, atHour) {
+async function assign(card, techId, hours, atHour, isUndo) {
+  const from = card.kind === 'ro' ? card.assignedTechId ?? null : null;
+  if (card.kind === 'ro' && from != null && from === techId) {
+    if (atHour != null) { await plan(card.key, atHour).catch(() => {}); state.flash = card.key; await load(true); }
+    return;
+  }
   const body = card.kind === 'appt'
     ? { shopId: state.shopId, appointmentId: card.appointmentId, techId, hours }
-    : { shopId: state.shopId, roId: card.roId, techId };
+    : { shopId: state.shopId, roId: card.roId, techId, fromTechId: from };
   try {
     await api('/api/assign', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     if (atHour != null && techId != null) await plan(card.kind === 'ro' ? `ro-${card.roId}-${techId}` : card.key, atHour);
     state.flash = techId == null ? card.key : card.kind === 'ro' ? `ro-${card.roId}-${techId}` : card.key;
     if (techId == null && card.kind === 'appt') await plan(card.key, null);
-    const tech = techCols().find((c) => c.id === techId)?.name;
+    const tech = state.board.columns.find((c) => c.id === techId)?.name;
+    const fromName = state.board.columns.find((c) => c.id === from)?.name;
+    const undo = card.kind === 'ro' && from != null && !isUndo
+      ? { label: 'Undo', fn: () => assign({ ...card, key: `ro-${card.roId}-${techId}`, assignedTechId: techId }, from, null, null, true) } : null;
     toast(techId == null ? `${card.customer} moved back to Unassigned`
-      : card.kind === 'ro' ? `RO ${card.roNumber}: technician set to ${tech} in Tekmetric`
-      : `${card.customer} → ${tech} · RO tech is set when it opens`);
+      : card.kind === 'ro' ? (from != null ? `RO ${card.roNumber}: ${fromName}'s work moved to ${tech} in Tekmetric` : `RO ${card.roNumber}: technician set to ${tech} in Tekmetric`)
+      : `${card.customer} → ${tech} · RO tech is set when it opens`, false, undo);
     await load(true);
   } catch (e) { if (e.message !== 'signed out') toast(e.message, true); }
 }
@@ -539,6 +556,7 @@ function openAssign(card) {
     ${isAppt ? `<label class="hrs-in">Estimated hours <input type="number" name="hours" min="0.1" max="24" step="0.1" value="${card.hours.toFixed(1)}"></label>` : ''}
     <p class="note">${isAppt
       ? 'When the customer arrives and the RO opens, this tech is set as the RO\'s technician in Tekmetric (only if no tech is set yet).'
+      : current ? `Moves ${esc(techCols().find((t) => t.id === current)?.name ?? 'this tech')}'s jobs on RO ${esc(card.roNumber)} (${card.hours.toFixed(1)} h) to the tech you pick, in Tekmetric, right away. Other techs' jobs on the RO stay as they are.`
       : `Sets this tech on RO ${esc(card.roNumber)} and on any of its jobs without a tech, in Tekmetric, right away.`}</p>
     ${isAppt ? `<div class="actions minor">
       <button type="button" class="btn" data-noshow>Mark no-show</button>
@@ -565,7 +583,7 @@ function openAssign(card) {
     e.preventDefault();
     const f = new FormData(e.target);
     const techId = f.get('tech') ? Number(f.get('tech')) : current ?? null;
-    if (!isAppt) { close(); return assign(card, techId); }
+    if (!isAppt) { close(); if (techId !== current) assign(card, techId); return; }
     const hours = Number(f.get('hours')) || card.hours;
     const date = f.get('date'); const startHour = fromHM(f.get('time')); const dropHour = fromHM(f.get('drop'));
     if (dropHour != null && dropHour > startHour) return toast('Drop-off should be at or before the appointment time.', true);
@@ -764,7 +782,7 @@ function advisorBoard(b) {
     : '<span class="muted">Nothing waiting</span>';
   return `<section class="board" aria-label="Service advisor board">
     <div class="grid" style="grid-template-columns:${template}">
-      <div class="pin0" style="border-bottom:1px solid var(--line);background:var(--soft)"></div>
+      <div class="pin0 corner"></div>
       ${cols.map(head).join('')}
       <div class="times pin0" style="height:${height}px">${times}</div>
       ${cols.map((c) => `<div class="lane ${c.type === 'unassigned' ? 'un pin1' : ''}" data-sadrop="${c.id}" style="height:${height}px">${band}${nowLine}${c.cards.map((k) => saCard(k, c, start)).join('')}</div>`).join('')}
@@ -931,6 +949,8 @@ function flashCard() {
   const board = document.querySelector('.board');
   const r = el.getBoundingClientRect(); const br = board.getBoundingClientRect();
   if (r.left < br.left + 314 || r.right > br.right) board.scrollLeft += r.left - br.left - 340; // keep clear of the pinned columns
+  const headH = board.querySelector('.colhead')?.offsetHeight ?? 0;
+  if (r.top < br.top + headH || r.bottom > br.bottom) board.scrollTop += r.top - br.top - headH - 40; // and of the header row
   el.classList.add('flash');
   setTimeout(() => el.classList.remove('flash'), 2200);
 }
@@ -967,7 +987,7 @@ function bind() {
       const hour = Math.min(Math.max(Math.round((start + y / HOUR) * 4) / 4, start), end - 0.25);
       state.drag = null;
       if (target == null) {
-        if (card.kind === 'ro') return toast('An open RO keeps its tech in Tekmetric. Change it there.', true);
+        if (card.kind === 'ro') return toast('An open RO needs a tech in Tekmetric. Drop it on another tech instead.', true);
         if (from?.type === 'unassigned') return;
         return assign(card, null);
       }
@@ -976,7 +996,7 @@ function bind() {
         catch (err) { if (err.message !== 'signed out') toast(err.message, true); }
         return;
       }
-      if (!canAssign(card) && !(card.kind === 'appt')) return toast('This RO\'s tech is set in Tekmetric. Change the tech there.', true);
+      if (!canAssign(card)) return toast('This RO is complete, so its tech stays as it is.', true);
       assign(card, target, card.hours, hour);
     });
   });
@@ -1038,4 +1058,5 @@ function bindBooking() {
   app.querySelectorAll('[data-key]').forEach((el) => el.addEventListener('dragend', () => { state.drag = null; app.querySelectorAll('.drop').forEach((x) => x.classList.remove('drop')); }));
 }
 
+addEventListener('resize', () => document.documentElement.style.setProperty('--hdr', `${document.querySelector('header')?.offsetHeight ?? 70}px`));
 start().catch((e) => { app.innerHTML = `<div class="loading error">${esc(e.message)}</div>`; });

@@ -16,7 +16,7 @@ A dispatch board on top of Tekmetric for the Denver and Littleton shops.
 - Pay-period hours completed and pace (1st–15th, 16th–end)
 - Week strip with appointment and waiter counts, day summary, no-show alerts
 - Google sign-in limited to @toydoctorinc.com
-- **Assigning:** click any booked appointment (or open RO with no tech) to pick a tech and estimated hours, or drag it onto a tech's column
+- **Assigning:** click any booked appointment or open RO (drag it to another tech to move it; an open RO is changed in Tekmetric right away, with Undo) to pick a tech and estimated hours, or drag it onto a tech's column
 
 **Step 2 (availability)**
 - Each tech's header has an availability button: In (default), Out, Leaves early, Limit work, a note, and daily capacity (every day or today only)

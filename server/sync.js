@@ -60,3 +60,21 @@ export async function assignOpenRO({ client, ro, techId }) {
   client.clearCache();
   return { roId: ro.id, jobs };
 }
+
+// Moving an RO's work from one tech to another on the board (drag or the card's dialog).
+// Moves the jobs that tech has on the RO (jobs with no tech count as the RO's tech), and the RO's own
+// technician if it was that tech. Other techs' jobs on the same RO stay as they are.
+export async function reassignRO({ client, ro, fromTechId, toTechId }) {
+  if (fromTechId === toTechId) return { roId: ro.id, jobs: 0, roTech: 'kept' };
+  const roTechWasFrom = ro.technicianId === fromTechId;
+  let jobs = 0;
+  for (const job of ro.jobs ?? []) {
+    if (job.archived) continue;
+    if ((job.technicianId ?? ro.technicianId) !== fromTechId) continue;
+    await client.patchJob(job.id, { technicianId: toTechId });
+    jobs++;
+  }
+  if (roTechWasFrom) await client.patchRepairOrder(ro.id, { technicianId: toTechId });
+  client.clearCache();
+  return { roId: ro.id, jobs, roTech: roTechWasFrom ? 'set' : 'kept' };
+}

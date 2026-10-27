@@ -13,7 +13,7 @@ import { buildMonth, buildWeek } from './views.js';
 import { settings } from './config.js';
 import { localDate } from './time.js';
 import { createStore } from './store.js';
-import { assignOpenRO } from './sync.js';
+import { assignOpenRO, reassignRO } from './sync.js';
 import { saveAvailability } from './availability.js';
 import { bookAppointment, changeAppointment, customerVehicles, keepNoShow, searchCustomers, UserError } from './appointments.js';
 
@@ -106,6 +106,9 @@ app.post('/api/assign', auth.require, async (req, res, next) => {
     const ros = (await Promise.all([1, 2].map((st) => client.getRepairOrders(shopId, { repairOrderStatusId: String(st) })))).flat();
     const ro = ros.find((r) => r.id === Number(roId));
     if (!ro) return res.status(404).json({ error: 'That RO is no longer open.' });
+    const fromTechId = req.body?.fromTechId == null ? null : Number(req.body.fromTechId);
+    // a card already on a tech: move that tech's work on the RO to the new tech (written now)
+    if (fromTechId != null) return res.json({ ok: true, ...(await reassignRO({ client, ro, fromTechId, toTechId: techId })) });
     res.json({ ok: true, ...(await assignOpenRO({ client, ro, techId })) });
   } catch (e) { next(e); }
 });
