@@ -10,7 +10,7 @@ import { createMockClient, demoNow } from './mock.js';
 import { createAuth } from './auth.js';
 import { buildBoard, sortTechs } from './board.js';
 import { buildMonth, buildWeek } from './views.js';
-import { settings } from './config.js';
+import { settings, shopLabel } from './config.js';
 import { localDate } from './time.js';
 import { createStore } from './store.js';
 import { assignOpenRO, reassignRO } from './sync.js';
@@ -56,7 +56,7 @@ app.get('/api/shops', auth.require, async (req, res, next) => {
     res.json({
       demo: MOCK,
       today: localDate(now(), settings.timeZone),
-      shops: shops.map((s) => ({ id: s.id, name: settings.shopNames[s.id] ?? s.nickname ?? s.name })),
+      shops: shops.map((s) => ({ id: s.id, name: shopLabel(s, shops), tekmetricName: s.nickname || s.name || '', city: s.address?.city ?? '' })),
     });
   } catch (e) { next(e); }
 });

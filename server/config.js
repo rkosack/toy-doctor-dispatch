@@ -54,3 +54,15 @@ export const settings = {
     // waits on the customer or the shop: not counted
   },
 };
+
+// What a location is called on the board: settings.shopNames, else Tekmetric's nickname or name if it's a
+// real name (not just the shop number), else the city on its address.
+export function shopLabel(shop, all = []) {
+  if (settings.shopNames[shop.id]) return settings.shopNames[shop.id];
+  const real = (n) => n && !/^\s*#?\d+\s*$/.test(String(n));
+  for (const n of [shop.nickname, shop.name]) {
+    // a name both locations share (e.g. the company name) doesn't tell them apart
+    if (real(n) && all.filter((o) => o.nickname === n || o.name === n).length <= 1) return String(n).trim();
+  }
+  return shop.address?.city || shop.name || `Shop ${shop.id}`;
+}

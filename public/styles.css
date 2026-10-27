@@ -302,3 +302,4 @@ dialog.assign label.field { font-size: 12px; font-weight: 600; color: var(--mute
 .techrow .mv:first-child { border-radius: 6px 6px 0 0; }
 .techrow .mv:last-child { border-radius: 0 0 6px 6px; border-top: 0; }
 .techrow .mv:hover { color: var(--ink); }
+a.btn.linkout { display: inline-flex; align-items: center; text-decoration: none; color: var(--ink); }

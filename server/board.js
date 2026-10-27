@@ -98,7 +98,7 @@ const initials = (e) => `${(e.firstName ?? ' ')[0]}${(e.lastName ?? ' ')[0]}`.to
 async function pickAdvisors(client, shopId, employees) {
   const active = employees.filter((e) => !e.disabled);
   const shop = (await client.getShops()).find((x) => x.id === Number(shopId));
-  const label = lc([settings.shopNames[shopId], shop?.nickname, shop?.name].filter(Boolean).join(' '));
+  const label = lc([settings.shopNames[shopId], shop?.nickname, shop?.name, shop?.address?.city].filter(Boolean).join(' '));
   const names = Object.entries(settings.advisors ?? {}).find(([loc]) => label.includes(lc(loc)))?.[1];
   if (!names) return { list: active.filter((e) => !e.canPerformWork), missing: [] };
   const first = (e) => lc(e.firstName).trim();
@@ -219,6 +219,13 @@ export async function buildBoard(client, { shopId, date, now = new Date(), store
         alsoOn: techIds.filter((t) => t !== techId).map((t) => personName(empById.get(t)) || 'Unassigned'),
         advisor: personName(empById.get(ro.serviceWriterId)),
         assignedTechId: techId === 'unassigned' ? null : techId,
+        advisorId: ro.serviceWriterId ?? null, notArrived: Boolean(notArrived), shopId: Number(shopId),
+        // the appointment behind this RO (today's), so it can be edited from the card
+        ...(apptToday ? {
+          appointmentId: appt.id, startTime: appt.startTime, customerId: appt.customerId, vehicleId: appt.vehicleId ?? null,
+          description: appt.description ?? '', rideOption: typeof appt.rideOption === 'string' ? appt.rideOption : appt.rideOption?.code ?? null,
+          pickupHour: appt.pickupTime && localDate(new Date(appt.pickupTime), TZ) === date ? localHours(new Date(appt.pickupTime), TZ) : null,
+        } : {}),
       };
       if (state === 'parts' || state === 'offsite') col(techId).parked.push(card);
       else col(techId).cards.push(card);

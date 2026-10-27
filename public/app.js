@@ -554,8 +554,10 @@ async function keepComing(card) {
   catch (e) { if (e.message !== 'signed out') toast(e.message, true); }
 }
 
+const tekLink = (card) => (state.demo || !card.roId ? '' : `<a class="btn linkout" href="https://shop.tekmetric.com/admin/shop/${state.shopId}/repair-orders/${card.roId}/estimate" target="_blank" rel="noopener">Open RO in Tekmetric ↗</a>`);
 function openAssign(card) {
-  if (card.kind === 'appt') return openApptEdit(card);
+  // an appointment, or an RO opened from today's appointment: the full editor
+  if (card.kind === 'appt' || card.appointmentId) return openApptEdit(card);
   const current = card.assignedTechId;
   const dlg = document.createElement('dialog');
   dlg.className = 'assign';
@@ -568,7 +570,8 @@ function openAssign(card) {
     </fieldset>
     <p class="note">${current ? `Moves ${esc(techCols().find((t) => t.id === current)?.name ?? 'this tech')}'s jobs on RO ${esc(card.roNumber)} (${card.hours.toFixed(1)} h) to the tech you pick, in Tekmetric, right away. Other techs' jobs on the RO stay as they are.`
       : `Sets this tech on RO ${esc(card.roNumber)} and on any of its jobs without a tech, in Tekmetric, right away.`}</p>
-    <div class="actions"><span style="flex:1"></span><button type="button" class="btn" data-cancel>Close</button><button type="submit" class="btn primary">${current ? 'Save' : 'Assign'}</button></div>
+    <p class="note">No appointment for this RO today, so its other details are changed in Tekmetric.</p>
+    <div class="actions">${tekLink(card)}<span style="flex:1"></span><button type="button" class="btn" data-cancel>Close</button><button type="submit" class="btn primary">${current ? 'Save' : 'Assign'}</button></div>
   </form>`;
   document.body.appendChild(dlg);
   const close = () => { dlg.close(); dlg.remove(); };
@@ -585,6 +588,9 @@ function openAssign(card) {
 // Edit a booked appointment: everything Tekmetric lets us change, plus the board's tech, hours and advisor.
 function openApptEdit(card) {
   const b = state.board;
+  const isRO = card.kind === 'ro';
+  const canDismiss = !isRO || card.notArrived; // no-show / cancel only before the customer arrives
+  const advisorName = advisorList().find((a) => a.id === card.advisorId)?.name ?? card.advisor ?? '';
   const was = wasAt(card);
   const allT = b.columns.filter((c) => c.type === 'tech');
   const cat = CAT_KEYS.includes(card.category) ? card.category : null;
@@ -593,7 +599,7 @@ function openApptEdit(card) {
   dlg.className = 'assign wide book';
   dlg.innerHTML = `<form method="dialog" autocomplete="off">
     <h2>Edit appointment</h2>
-    <p class="muted" style="margin:0"><b style="color:var(--ink)">${esc(card.customer)}</b> · ${esc(card.label)}${card.noShow ? ' · <span style="color:var(--red)">1 h past, not arrived</span>' : ''}</p>
+    <p class="muted" style="margin:0"><b style="color:var(--ink)">${esc(card.customer)}</b>${isRO ? ` · RO ${esc(card.roNumber)}` : ''} · ${esc(card.label)}${card.noShow ? ' · <span style="color:var(--red)">1 h past, not arrived</span>' : ''}</p>
     <label class="field">Vehicle<select name="vehicle"><option value="${card.vehicleId ?? ''}">${esc(card.vehicle || 'Loading vehicles…')}</option></select></label>
     <fieldset><legend>Type of work</legend><div class="kinds">
       ${CAT_KEYS.map((c) => `<label class="kind" style="--bg:var(--c-${c}-bg);--bd:var(--c-${c}-bd);--dot:var(--c-${c}-dot)"><input type="radio" name="category" value="${c}" ${c === cat ? 'checked' : ''} required><i></i><span>${esc(CAT[c])}</span></label>`).join('')}
@@ -606,19 +612,23 @@ function openApptEdit(card) {
     </div>
     <div class="row3">
       <label>Pick-up <span class="muted" data-pickreq>${ride === 'NONE' ? '(optional)' : '(required)'}</span><input type="time" name="pick" step="900" value="${card.pickupHour != null ? toHM(card.pickupHour) : ''}"></label>
-      <label>Est. hours<input type="number" name="hours" min="0.1" max="24" step="0.1" value="${card.hours.toFixed(1)}"></label>
+      <label>${isRO ? 'Hours on RO' : 'Est. hours'}<input type="number" name="hours" min="0.1" max="24" step="0.1" value="${card.hours.toFixed(1)}" ${isRO ? 'disabled title="Sold hours come from the RO in Tekmetric"' : ''}></label>
     </div>
     <div class="row3">
-      <label style="grid-column:span 2">Technician<select name="tech"><option value="">Unassigned</option>${allT.map((t) => `<option value="${t.id}" ${t.id === card.assignedTechId ? 'selected' : ''}>${esc(t.name)} · ${t.out ? 'out' : t.open >= 0 ? `${t.open.toFixed(1)} h open` : `${Math.abs(t.open).toFixed(1)} h over`}</option>`).join('')}</select></label>
-      <label>Service advisor<select name="advisor"><option value="">None</option>${advisorList().map((a) => `<option value="${a.id}" ${a.id === card.advisorId ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select></label>
+      <label style="grid-column:span 2">Technician<select name="tech">${isRO && card.assignedTechId ? '' : '<option value="">Unassigned</option>'}${allT.map((t) => `<option value="${t.id}" ${t.id === card.assignedTechId ? 'selected' : ''}>${esc(t.name)} · ${t.out ? 'out' : t.open >= 0 ? `${t.open.toFixed(1)} h open` : `${Math.abs(t.open).toFixed(1)} h over`}</option>`).join('')}</select></label>
+      ${isRO && card.advisorId
+        ? `<label>Service advisor<select name="advisor" disabled title="Set on the RO in Tekmetric"><option value="${card.advisorId}">${esc(advisorName || 'Set in Tekmetric')}</option></select></label>`
+        : `<label>Service advisor<select name="advisor"><option value="">None</option>${advisorList().map((a) => `<option value="${a.id}" ${a.id === card.advisorId ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select></label>`}
     </div>
     <fieldset><legend>Ride</legend><div class="chips" style="padding-left:0">
       ${[['NONE', 'None'], ['LOANER', 'Loaner'], ['RIDE', 'Ride / shuttle']].map(([v, l]) => `<label class="chipopt"><input type="radio" name="ride" value="${v}" ${v === ride ? 'checked' : ''}><span>${l}</span></label>`).join('')}
     </div></fieldset>
-    <p class="note">Date, time, vehicle, type, concern and ride are saved to the appointment in Tekmetric. Tech, hours and advisor are written to the RO when it opens (only where blank).</p>
+    <p class="note">${isRO
+      ? `Date, time, vehicle, type, concern and ride are saved to the appointment in Tekmetric. Changing the tech moves ${card.assignedTechId ? 'this tech\'s' : 'the'} jobs on RO ${esc(card.roNumber)} in Tekmetric right away.`
+      : 'Date, time, vehicle, type, concern and ride are saved to the appointment in Tekmetric. Tech, hours and advisor are written to the RO when it opens (only where blank).'}</p>
     <div class="actions minor">
-      <button type="button" class="btn" data-noshow>Mark no-show</button>
-      <button type="button" class="btn" data-cancelappt>Cancel appointment</button>
+      ${canDismiss ? '<button type="button" class="btn" data-noshow>Mark no-show</button><button type="button" class="btn" data-cancelappt>Cancel appointment</button>' : ''}
+      ${tekLink(card)}
     </div>
     <div class="actions"><span style="flex:1"></span><button type="button" class="btn" data-cancel>Close</button><button type="submit" class="btn primary">Save</button></div>
   </form>`;
@@ -628,8 +638,8 @@ function openApptEdit(card) {
   const close = () => { const t = dlg.querySelector('.toast'); if (t) document.body.appendChild(t); dlg.close(); dlg.remove(); };
   dlg.querySelector('[data-cancel]').addEventListener('click', close);
   dlg.addEventListener('cancel', () => dlg.remove());
-  dlg.querySelector('[data-noshow]').addEventListener('click', () => { close(); markNoShow(card); });
-  dlg.querySelector('[data-cancelappt]').addEventListener('click', (e) => {
+  dlg.querySelector('[data-noshow]')?.addEventListener('click', () => { close(); markNoShow(card); });
+  dlg.querySelector('[data-cancelappt]')?.addEventListener('click', (e) => {
     const btn = e.currentTarget;
     if (!btn.dataset.sure) { btn.dataset.sure = '1'; btn.textContent = 'Click again to cancel it in Tekmetric'; btn.classList.add('danger'); return; }
     close(); cancelAppt(card);
@@ -662,14 +672,20 @@ function openApptEdit(card) {
     if (f.get('vehicle') && Number(f.get('vehicle')) !== card.vehicleId) change.vehicleId = Number(f.get('vehicle'));
     if (rideNow !== ride || (pickHour ?? null) !== (card.pickupHour ?? null)) Object.assign(change, { rideOption: rideNow, pickupHour: pickHour });
     const techId = f.get('tech') ? Number(f.get('tech')) : null;
-    const hours = Number(f.get('hours')) || card.hours;
-    const advisorId = f.get('advisor') ? Number(f.get('advisor')) : null;
+    const hours = isRO ? card.hours : Number(f.get('hours')) || card.hours;
+    const advisorId = isRO && card.advisorId ? card.advisorId : f.get('advisor') ? Number(f.get('advisor')) : null;
     const retech = techId !== (card.assignedTechId ?? null) || Math.abs(hours - card.hours) > 0.01;
     const readv = advisorId !== (card.advisorId ?? null);
+    if (isRO && retech && techId == null) return toast('An open RO needs a tech. Pick one.', true);
     const btn = form.querySelector('[type=submit]'); btn.disabled = true; btn.textContent = 'Saving…';
     try {
-      if (retech) await api('/api/assign', json('POST', { shopId: state.shopId, appointmentId: card.appointmentId, techId, hours }));
-      if (readv) await api('/api/advisor', json('POST', { shopId: state.shopId, appointmentId: card.appointmentId, advisorId }));
+      if (retech) {
+        await api('/api/assign', json('POST', isRO
+          ? { shopId: state.shopId, roId: card.roId, techId, fromTechId: card.assignedTechId ?? null }
+          : { shopId: state.shopId, appointmentId: card.appointmentId, techId, hours }));
+        if (isRO) card = { ...card, key: `ro-${card.roId}-${techId}`, assignedTechId: techId };
+      }
+      if (readv) await api('/api/advisor', json('POST', isRO ? { shopId: state.shopId, roId: card.roId, advisorId } : { shopId: state.shopId, appointmentId: card.appointmentId, advisorId }));
     } catch (err) { btn.disabled = false; btn.textContent = 'Save'; if (err.message !== 'signed out') toast(err.message, true); return; }
     if (!Object.keys(change).length) {
       close(); state.flash = card.key; toast(retech || readv ? `${card.customer}: saved` : 'No changes'); if (retech || readv) await load(true); return;
