@@ -26,7 +26,7 @@ export const settings = {
 
   // Tekmetric shop IDs → display names. Leave empty to use every shop the API key can see.
   // Example: { 1234: 'Denver', 5678: 'Littleton' }
-  shopNames: {},
+  shopNames: { 4084: 'Denver', 4085: 'Littleton' },
 
   // Day – Service Advisor columns, by location (matched to the Tekmetric location name) and first name.
   // Anyone else set as an RO's service writer still gets a column for that RO.
