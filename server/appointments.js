@@ -66,15 +66,23 @@ export function updateBody(appt, changes, palette) {
   return Object.fromEntries(Object.entries(body).filter(([, v]) => v !== undefined && v !== null));
 }
 
-// Saves an appointment. Tekmetric refuses customer and vehicle on follow-up appointments (ones made from an
-// RO), even unchanged, so when it says so the save is retried without them (they can't change anyway).
-export async function patchAppt(client, id, body, vehicleChanged) {
+// Saves an appointment. Tekmetric's API refuses any change to a "follow-up" appointment (one made from an RO):
+// with the customer and vehicle it says they can't be modified, and without them it says the same. Seen in
+// production. The board remembers which appointments are follow-ups so it can say so up front next time.
+export class FollowUpError extends Error {}
+export const FOLLOW_UP_MSG = 'This is a follow-up appointment (made from an RO). Tekmetric doesn\'t let outside apps change those, so change its date, time or details in Tekmetric.';
+export async function patchAppt(client, id, body, vehicleChanged, store = null, shopId = null) {
   try { return await client.patchAppointment(id, body); }
   catch (e) {
     if (!/follow-up/i.test(e.message)) throw e;
-    if (vehicleChanged) throw new UserError('This is a follow-up appointment from an RO, so Tekmetric doesn\'t allow changing its vehicle.');
-    const { customerId, vehicleId, ...rest } = body;
-    return client.patchAppointment(id, rest);
+    let err = e;
+    if (!vehicleChanged) {
+      const { customerId, vehicleId, ...rest } = body;
+      try { return await client.patchAppointment(id, rest); } catch (e2) { err = e2; }
+    }
+    if (!/follow-up/i.test(err.message)) throw err;
+    if (store && shopId) await store.setMeta(`followups-${shopId}`, { [id]: true }).catch(() => {});
+    throw new FollowUpError(FOLLOW_UP_MSG);
   }
 }
 
@@ -258,7 +266,8 @@ export async function changeAppointment(ctx, id, input) {
   if (!Object.keys(changes).length) return { ok: true, unchanged: true };
   const body = updateBody(appt, changes, palette);
   if (changes.rideOption) body.rideOption = changes.rideOption; // an explicit change is always sent
-  await patchAppt(client, appt.id, body, Boolean(changes.vehicleId));
+  try { await patchAppt(client, appt.id, body, Boolean(changes.vehicleId), store, shopId); }
+  catch (e) { if (e instanceof FollowUpError) throw new UserError(e.message); throw e; }
   client.clearCache();
   // a board plan belongs to the day it was made for
   if (newDate !== oldDate || changes.status === 'NO_SHOW' || changes.status === 'CANCELED') await store.setPlan(shopId, oldDate, `appt-${appt.id}`, null);
@@ -304,7 +313,8 @@ async function tagAppointmentInner(ctx, { shopId, appointmentId, techId, employe
     const title = taggedTitle(appt.title, techTag(tech), employees);
     if (title === appt.title) return { tagged: true, unchanged: true, title };
     const palette = await paletteOrCheck(ctx, Number(shopId));
-    await patchAppt(client, appt.id, updateBody(appt, { title }, palette), false);
+    try { await patchAppt(client, appt.id, updateBody(appt, { title }, palette), false, ctx.store, Number(shopId)); }
+    catch (e) { if (e instanceof FollowUpError) return { tagged: false, followUp: true, reason: 'follow-up appointment: Tekmetric refuses changes' }; throw e; }
     client.clearCache();
     const after = await client.getAppointment(appt.id, Number(shopId)).catch(() => null);
     return { tagged: true, title, before: appt.title, readBack: after?.title ?? null };

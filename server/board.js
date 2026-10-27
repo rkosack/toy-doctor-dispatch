@@ -178,6 +178,7 @@ export async function buildBoard(client, { shopId, date, now = new Date(), store
   // ---- names (customers, vehicles): from memory or saved; anything missing loads in the background ----
   const namesPending = await loadNames(client, store, [...dayROs, ...dayAppts, ...authROs].map((x) => [x.customerId, x.vehicleId]));
   const who = (x) => nameOf(client, x);
+  const followUps = (store?.getMeta ? await store.getMeta(`followups-${shopId}`) : null) ?? {}; // appointments Tekmetric won't let us change
 
   // ---- columns ----
   const columns = new Map();
@@ -229,7 +230,7 @@ export async function buildBoard(client, { shopId, date, now = new Date(), store
         advisorId: ro.serviceWriterId ?? null, notArrived: Boolean(notArrived), shopId: Number(shopId),
         // the appointment behind this RO (today's), so it can be edited from the card
         ...(apptToday ? {
-          appointmentId: appt.id, startTime: appt.startTime, customerId: appt.customerId, vehicleId: appt.vehicleId ?? null,
+          appointmentId: appt.id, followUp: Boolean(followUps[appt.id]), startTime: appt.startTime, customerId: appt.customerId, vehicleId: appt.vehicleId ?? null,
           description: appt.description ?? '', rideOption: typeof appt.rideOption === 'string' ? appt.rideOption : appt.rideOption?.code ?? null,
           pickupHour: appt.pickupTime && localDate(new Date(appt.pickupTime), TZ) === date ? localHours(new Date(appt.pickupTime), TZ) : null,
         } : {}),
@@ -258,7 +259,7 @@ export async function buildBoard(client, { shopId, date, now = new Date(), store
       label: arrived ? 'Arrived' : 'Not arrived', state: arrived ? 'arrived' : 'notArrived', counts: true, noShow,
       startHour: localHours(new Date(a.startTime), TZ), dropHour: dropHour(a, date), alsoOn: [],
       assignedTechId: techCol ? assigned.techId : null,
-      advisorId: assigned?.advisorId ?? null,
+      advisorId: assigned?.advisorId ?? null, followUp: Boolean(followUps[a.id]),
       customerId: a.customerId, vehicleId: a.vehicleId ?? null, description: a.description ?? '',
       pickupHour: a.pickupTime && localDate(new Date(a.pickupTime), TZ) === date ? localHours(new Date(a.pickupTime), TZ) : null,
       startTime: a.startTime, rideOption: typeof a.rideOption === 'string' ? a.rideOption : a.rideOption?.code ?? null,

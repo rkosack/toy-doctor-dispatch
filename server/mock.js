@@ -208,7 +208,7 @@ export function createMockClient() {
       if (events.has(id)) { Object.assign(events.get(id), fromBody(body)); return { type: 'SUCCESS', data: id }; }
       const a = [...pools.values()].flatMap((p) => p.appts).find((x) => x.id === id);
       if (!a) throw new Error('Tekmetric PATCH /api/v1/appointments failed (404)');
-      if (a.appointmentType === 'FOLLOW_UP' && ('customerId' in body || 'vehicleId' in body)) throw new Error('Tekmetric PATCH /api/v1/appointments failed (400): {"type":"ERROR","message":"Customer/vehicle cannot be modified on follow-up appointments","data":null,"details":{}}');
+      if (a.appointmentType === 'FOLLOW_UP') throw new Error('Tekmetric PATCH /api/v1/appointments failed (400): {"type":"ERROR","message":"Customer/vehicle cannot be modified on follow-up appointments","data":null,"details":{}}');
       const change = fromBody(body);
       patches.appt.set(id, { ...(patches.appt.get(id) ?? {}), ...change });
       for (const p of pools.values()) for (const x of p.appts) if (x.id === id) Object.assign(x, change);
