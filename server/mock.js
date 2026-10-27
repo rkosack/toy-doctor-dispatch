@@ -186,8 +186,8 @@ export function createMockClient() {
     peekCustomer: (id) => customers.get(Number(id)),
     peekVehicle: (id) => vehicles.get(Number(id)),
     warmNames: () => {},
-    getCustomer: async (id) => customers.get(Number(id)) ?? { id, firstName: '', lastName: 'Customer' },
-    getVehicle: async (id) => vehicles.get(Number(id)) ?? { id, year: null, make: '', model: 'Vehicle' },
+    nameFailed: () => null,
+    primeNames: () => {},
     patchRepairOrder: async (id, body) => {
       patches.ro.set(Number(id), { ...(patches.ro.get(Number(id)) ?? {}), ...body });
       for (const p of pools.values()) for (const ro of p.ros) if (ro.id === Number(id)) Object.assign(ro, body);

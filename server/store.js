@@ -12,6 +12,8 @@ function createFileStore(file) {
   let db = { assignments: {}, synced: {}, plans: {}, techs: {}, availability: {}, meta: {} };
   try { db = { ...db, ...JSON.parse(fs.readFileSync(file, 'utf8')) }; } catch { /* first run */ }
   const save = () => fs.writeFileSync(file, JSON.stringify(db, null, 2));
+  let saveTimer = null;
+  const saveSoon = () => { clearTimeout(saveTimer); saveTimer = setTimeout(save, 2000); };
   const key = (shopId, apptId) => `${shopId}_${apptId}`;
   return {
     async getAssignments(shopId, apptIds) {
@@ -49,6 +51,9 @@ function createFileStore(file) {
       save();
     },
     // small settings and notes kept by the board (learned colors, "still coming" no-shows): merged on save
+    // customer / vehicle names, so a restart doesn't have to load them all again: [[key, data], …]
+    async getNames(keys) { return keys.filter((k) => db.names?.[k]).map((k) => [k, db.names[k]]); },
+    async setName(key, data) { db.names ??= {}; db.names[key] = data; saveSoon(); },
     async getMeta(id) { return db.meta?.[id] ?? null; },
     async setMeta(id, value) { db.meta ??= {}; db.meta[id] = { ...(db.meta[id] ?? {}), ...value }; save(); },
   };
@@ -67,6 +72,7 @@ async function createFirestoreStore() {
   const T = col('techSettings');
   const V = col('availability');
   const M = col('meta');
+  const N = col('names');
   const key = (shopId, apptId) => `${shopId}_${apptId}`;
   return {
     async getAssignments(shopId, apptIds) {
@@ -108,6 +114,12 @@ async function createFirestoreStore() {
     async setAvailability(shopId, date, techId, value) {
       await V.doc(`${shopId}_${date}`).set({ [techId]: value == null ? FieldValue.delete() : value }, { merge: true });
     },
+    async getNames(keys) {
+      if (!keys.length) return [];
+      const snaps = await fsdb.getAll(...keys.map((k) => N.doc(k.replace('/', '_'))));
+      return snaps.map((sn, i) => (sn.exists ? [keys[i], sn.data()] : null)).filter(Boolean);
+    },
+    async setName(key, data) { await N.doc(key.replace('/', '_')).set({ ...data, at: new Date().toISOString() }); },
     async getMeta(id) { const s = await M.doc(id).get(); return s.exists ? s.data() : null; },
     async setMeta(id, value) { await M.doc(id).set(value, { merge: true }); },
   };

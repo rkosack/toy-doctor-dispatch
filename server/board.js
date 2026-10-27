@@ -57,8 +57,38 @@ export function dropHour(appt, date) {
 }
 
 // A waiter: Tekmetric's "Stay with vehicle", or green (Toy Doctor's waiter color; the API can't set "Stay").
+// Tech columns in the order set in "Manage techs"; anyone not placed yet goes after, in Tekmetric's order.
+export const sortTechs = (list, techSettings) => list
+  .map((t, i) => ({ t, i, o: techSettings.get(t.id)?.order }))
+  .sort((a, b) => (a.o ?? 1e6 + a.i) - (b.o ?? 1e6 + b.i))
+  .map((x) => x.t);
 export const isWaiter = (a) => a?.appointmentOption?.code === 'STAY' || colorCategory(a?.color) === 'green';
-export const vehicleText = (v) => [v?.year, v?.model || v?.make].filter(Boolean).join(' ');
+const str = (x) => (typeof x === 'string' || typeof x === 'number' ? String(x) : x?.name ?? '');
+export const vehicleText = (v) => [str(v?.year), str(v?.model) || str(v?.make)].filter(Boolean).join(' ');
+
+// Customer and vehicle names for a card. Never blocks: shows "Loading name…" until the background load
+// finishes, and nothing (rather than a placeholder forever) if Tekmetric refused the lookup.
+export function nameOf(client, x) {
+  const c = x.customerId ? client.peekCustomer(x.customerId) : null;
+  const v = x.vehicleId ? client.peekVehicle(x.vehicleId) : null;
+  return {
+    customer: c ? (c.lastName || c.firstName || c.companyName || 'Customer')
+      : !x.customerId || client.nameFailed('customers', x.customerId) ? 'Customer' : 'Loading name…',
+    vehicle: v ? vehicleText(v) : !x.vehicleId || client.nameFailed('vehicles', x.vehicleId) ? '' : 'vehicle…',
+  };
+}
+const slim = (key, d) => (key.startsWith('customers/')
+  ? { id: d.id, firstName: d.firstName ?? '', lastName: d.lastName ?? '', companyName: d.companyName ?? '' }
+  : { id: d.id, year: str(d.year), make: str(d.make), model: str(d.model), subModel: str(d.subModel) });
+// Fills in names from what's been saved before, and starts loading the rest. Returns how many are still loading.
+export async function loadNames(client, store, pairs) {
+  const want = [];
+  for (const [c, v] of pairs) { if (c && !client.peekCustomer(c)) want.push(`customers/${c}`); if (v && !client.peekVehicle(v)) want.push(`vehicles/${v}`); }
+  if (want.length && store?.getNames) client.primeNames(await store.getNames([...new Set(want)]).catch(() => []));
+  const missing = pairs.filter(([c, v]) => (c && !client.peekCustomer(c) && !client.nameFailed('customers', c)) || (v && !client.peekVehicle(v) && !client.nameFailed('vehicles', v)));
+  if (missing.length) client.warmNames(missing, (key, data) => { store?.setName?.(key, slim(key, data)).catch(() => {}); });
+  return missing.length;
+}
 export const personName = (e) => (e ? `${e.firstName ?? ''} ${(e.lastName ?? '').slice(0, 1)}.`.trim() : '');
 const initials = (e) => `${(e.firstName ?? ' ')[0]}${(e.lastName ?? ' ')[0]}`.toUpperCase();
 
@@ -107,7 +137,8 @@ export async function buildBoard(client, { shopId, date, now = new Date(), store
   const [techSettings, availability] = store
     ? await Promise.all([store.getTechSettings(shopId), store.getAvailability(shopId, date)])
     : [new Map(), new Map()];
-  const techs = allTechs.filter((t) => techSettings.get(t.id)?.show !== false); // "Manage techs" can hide people
+  // "Manage techs" can hide people and set the column order
+  const techs = sortTechs(allTechs.filter((t) => techSettings.get(t.id)?.show !== false), techSettings);
   const live = (a) => !a.deletedDate && !['CANCELED', 'CANCELLED', 'NO_SHOW'].includes(a.appointmentStatus);
   const dayAppts = weekAppts.filter((a) => live(a) && localDate(new Date(a.startTime), TZ) === date);
   const apptById = new Map(weekAppts.map((a) => [a.id, a]));
@@ -137,19 +168,9 @@ export async function buildBoard(client, { shopId, date, now = new Date(), store
     return !notArrivedToday && localDate(new Date(ro.createdDate ?? now), TZ) <= date;
   });
 
-  // ---- names (customers, vehicles): from cache; anything missing loads in the background ----
-  const custIds = new Set(); const vehIds = new Set();
-  for (const x of [...dayROs, ...dayAppts, ...authROs]) { if (x.customerId) custIds.add(x.customerId); if (x.vehicleId) vehIds.add(x.vehicleId); }
-  const custById = new Map(); const vehById = new Map();
-  const missingC = []; const missingV = [];
-  for (const id of custIds) { const c = client.peekCustomer(id); c ? custById.set(id, c) : missingC.push(id); }
-  for (const id of vehIds) { const v = client.peekVehicle(id); v ? vehById.set(id, v) : missingV.push(id); }
-  if (missingC.length || missingV.length) client.warmNames(missingC, missingV);
-  const namesPending = missingC.length + missingV.length;
-  const who = (x) => {
-    const c = custById.get(x.customerId);
-    return { customer: c ? (c.lastName || c.firstName || 'Customer') : 'Loading name…', vehicle: vehicleText(vehById.get(x.vehicleId)) || (vehById.has(x.vehicleId) ? '' : 'vehicle…') };
-  };
+  // ---- names (customers, vehicles): from memory or saved; anything missing loads in the background ----
+  const namesPending = await loadNames(client, store, [...dayROs, ...dayAppts, ...authROs].map((x) => [x.customerId, x.vehicleId]));
+  const who = (x) => nameOf(client, x);
 
   // ---- columns ----
   const columns = new Map();
@@ -224,6 +245,8 @@ export async function buildBoard(client, { shopId, date, now = new Date(), store
       startHour: localHours(new Date(a.startTime), TZ), dropHour: dropHour(a, date), alsoOn: [],
       assignedTechId: techCol ? assigned.techId : null,
       advisorId: assigned?.advisorId ?? null,
+      customerId: a.customerId, vehicleId: a.vehicleId ?? null, description: a.description ?? '',
+      pickupHour: a.pickupTime && localDate(new Date(a.pickupTime), TZ) === date ? localHours(new Date(a.pickupTime), TZ) : null,
       startTime: a.startTime, rideOption: typeof a.rideOption === 'string' ? a.rideOption : a.rideOption?.code ?? null,
     };
     (techCol ?? columns.get('unassigned')).cards.push(card);

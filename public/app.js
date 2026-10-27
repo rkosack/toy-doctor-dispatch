@@ -448,9 +448,11 @@ async function openManageTechs() {
   dlg.className = 'assign wide';
   dlg.innerHTML = `<form method="dialog">
     <h2>Manage techs</h2>
-    <p class="muted" style="margin:0;font-size:13px">Choose who shows on the board and their usual daily capacity. Everyone Tekmetric lists as able to do work is here.</p>
+    <p class="muted" style="margin:0;font-size:13px">Choose who shows on the board, their order (drag a row or use the arrows), and their usual daily capacity. Everyone Tekmetric lists as able to do work is here.</p>
     <div class="chips"><button type="button" class="btn" data-all="1">Show all</button><button type="button" class="btn" data-all="0">Hide all</button><input type="search" placeholder="Search names" aria-label="Search techs" style="flex:1;height:44px;border:1px solid var(--line);border-radius:8px;padding:0 10px;font:inherit"></div>
-    <div class="techlist">${list.map((t) => `<div class="techrow" data-name="${esc(t.name.toLowerCase())}">
+    <div class="techlist">${list.map((t) => `<div class="techrow" draggable="true" data-id="${t.id}" data-name="${esc(t.name.toLowerCase())}">
+      <span class="grip" aria-hidden="true">⋮⋮</span>
+      <span class="moves"><button type="button" class="mv" data-mv="-1" aria-label="Move ${esc(t.name)} up">▲</button><button type="button" class="mv" data-mv="1" aria-label="Move ${esc(t.name)} down">▼</button></span>
       <label style="display:flex;align-items:center;gap:10px;flex:1;min-width:0;min-height:44px"><input type="checkbox" name="show" value="${t.id}" ${t.show ? 'checked' : ''}><span class="t">${esc(t.name)}</span><small class="muted">${esc(t.role)}</small></label>
       <label class="muted" style="font-size:12px;display:flex;align-items:center;gap:6px">h/day<input type="number" name="cap-${t.id}" min="0" max="16" step="0.5" value="${t.capacity}" style="width:72px;height:36px;border:1px solid var(--line);border-radius:8px;padding:0 8px;font:inherit;text-align:right"></label>
     </div>`).join('')}</div>
@@ -462,14 +464,34 @@ async function openManageTechs() {
   dlg.querySelector('[data-cancel]').addEventListener('click', close);
   dlg.addEventListener('cancel', () => dlg.remove());
   dlg.querySelectorAll('[data-all]').forEach((b) => b.addEventListener('click', () => dlg.querySelectorAll('.techrow:not([hidden]) input[name=show]').forEach((c) => { c.checked = b.dataset.all === '1'; })));
+  // order: arrows, or drag a row
+  const listEl = dlg.querySelector('.techlist');
+  listEl.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-mv]'); if (!b) return;
+    const row = b.closest('.techrow');
+    if (b.dataset.mv === '-1' && row.previousElementSibling) row.previousElementSibling.before(row);
+    if (b.dataset.mv === '1' && row.nextElementSibling) row.nextElementSibling.after(row);
+    b.focus();
+  });
+  let dragRow = null;
+  listEl.addEventListener('dragstart', (e) => { dragRow = e.target.closest('.techrow'); dragRow?.classList.add('dragging'); e.dataTransfer.effectAllowed = 'move'; });
+  listEl.addEventListener('dragend', () => { dragRow?.classList.remove('dragging'); dragRow = null; });
+  listEl.addEventListener('dragover', (e) => {
+    if (!dragRow) return; e.preventDefault();
+    const over = e.target.closest('.techrow'); if (!over || over === dragRow) return;
+    const r = over.getBoundingClientRect();
+    if (e.clientY < r.top + r.height / 2) over.before(dragRow); else over.after(dragRow);
+  });
   dlg.querySelector('input[type=search]').addEventListener('input', (e) => { const q = e.target.value.toLowerCase(); dlg.querySelectorAll('.techrow').forEach((r) => { r.hidden = !r.dataset.name.includes(q); }); });
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
-    const changes = list.map((t) => ({ techId: t.id, show: form.querySelector(`input[name=show][value="${t.id}"]`).checked, capacity: Number(form.querySelector(`input[name="cap-${t.id}"]`).value) }))
-      .filter((c, i) => c.show !== list[i].show || c.capacity !== list[i].capacity);
+    const order = [...listEl.querySelectorAll('.techrow')].map((r) => Number(r.dataset.id));
+    const reordered = order.some((id, i) => id !== list[i].id);
+    const changes = list.map((t) => ({ techId: t.id, show: form.querySelector(`input[name=show][value="${t.id}"]`).checked, capacity: Number(form.querySelector(`input[name="cap-${t.id}"]`).value), ...(reordered ? { order: order.indexOf(t.id) } : {}) }))
+      .filter((c, i) => reordered || c.show !== list[i].show || c.capacity !== list[i].capacity);
     try {
       if (changes.length) await api('/api/techs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ shopId: state.shopId, changes }) });
-      close(); toast(changes.length ? `Saved ${changes.length} change${changes.length === 1 ? '' : 's'}` : 'No changes'); await load(true);
+      close(); toast(reordered ? 'Tech order saved' : changes.length ? `Saved ${changes.length} change${changes.length === 1 ? '' : 's'}` : 'No changes'); await load(true);
     } catch (err) { if (err.message !== 'signed out') toast(err.message, true); }
   });
   dlg.showModal();
@@ -533,77 +555,135 @@ async function keepComing(card) {
 }
 
 function openAssign(card) {
-  const isAppt = card.kind === 'appt';
+  if (card.kind === 'appt') return openApptEdit(card);
   const current = card.assignedTechId;
-  const was = isAppt ? wasAt(card) : null;
   const dlg = document.createElement('dialog');
-  dlg.className = `assign ${isAppt ? 'wide' : ''}`;
+  dlg.className = 'assign';
   dlg.innerHTML = `<form method="dialog">
     <h2>${esc(card.customer)} · ${esc(card.vehicle)}</h2>
-    <p class="muted" style="margin:0">${esc(card.work)}${card.waiter ? ' · Waiter' : ''}</p>
-    ${isAppt ? `<fieldset class="when"><legend>Appointment in Tekmetric</legend>
-      <div class="row3">
-        <label>Date<input type="date" name="date" value="${state.date}" required></label>
-        <label>Time<input type="time" name="time" step="900" value="${toHM(card.startHour)}" required></label>
-        <label>Drop-off <span class="muted">(optional)</span><input type="time" name="drop" step="900" value="${was.dropHour != null ? toHM(was.dropHour) : ''}"></label>
-      </div>
-      <span class="note">Changing these moves the customer's appointment in Tekmetric.</span>
-    </fieldset>` : ''}
+    <p class="muted" style="margin:0">RO ${esc(card.roNumber)} · ${esc(card.work)}${card.waiter ? ' · Waiter' : ''}</p>
     <fieldset><legend>Technician</legend>
-      ${techCols().map((t) => `<label class="opt"><input type="radio" name="tech" value="${t.id}" ${t.id === current ? 'checked' : ''} ${isAppt ? '' : 'required'}>
+      ${techCols().map((t) => `<label class="opt"><input type="radio" name="tech" value="${t.id}" ${t.id === current ? 'checked' : ''} required>
         <span class="t" style="flex:1">${esc(t.name)}</span><span class="pill ${t.status}">${t.active.toFixed(1)} / ${t.capacity.toFixed(1)} h</span></label>`).join('')}
     </fieldset>
-    ${isAppt ? `<label class="hrs-in">Estimated hours <input type="number" name="hours" min="0.1" max="24" step="0.1" value="${card.hours.toFixed(1)}"></label>` : ''}
-    <p class="note">${isAppt
-      ? 'When the customer arrives and the RO opens, this tech is set as the RO\'s technician in Tekmetric (only if no tech is set yet).'
-      : current ? `Moves ${esc(techCols().find((t) => t.id === current)?.name ?? 'this tech')}'s jobs on RO ${esc(card.roNumber)} (${card.hours.toFixed(1)} h) to the tech you pick, in Tekmetric, right away. Other techs' jobs on the RO stay as they are.`
+    <p class="note">${current ? `Moves ${esc(techCols().find((t) => t.id === current)?.name ?? 'this tech')}'s jobs on RO ${esc(card.roNumber)} (${card.hours.toFixed(1)} h) to the tech you pick, in Tekmetric, right away. Other techs' jobs on the RO stay as they are.`
       : `Sets this tech on RO ${esc(card.roNumber)} and on any of its jobs without a tech, in Tekmetric, right away.`}</p>
-    ${isAppt ? `<div class="actions minor">
-      <button type="button" class="btn" data-noshow>Mark no-show</button>
-      <button type="button" class="btn" data-cancelappt>Cancel appointment</button>
-      ${current ? '<button type="button" class="btn" data-unassign>Move to Unassigned</button>' : ''}
-    </div>` : ''}
-    <div class="actions">
-      <span style="flex:1"></span>
-      <button type="button" class="btn" data-cancel>Close</button>
-      <button type="submit" class="btn primary">${isAppt || current ? 'Save' : 'Assign'}</button>
-    </div>
+    <div class="actions"><span style="flex:1"></span><button type="button" class="btn" data-cancel>Close</button><button type="submit" class="btn primary">${current ? 'Save' : 'Assign'}</button></div>
   </form>`;
   document.body.appendChild(dlg);
   const close = () => { dlg.close(); dlg.remove(); };
   dlg.querySelector('[data-cancel]').addEventListener('click', close);
-  dlg.querySelector('[data-unassign]')?.addEventListener('click', () => { close(); assign(card, null, card.hours); });
-  dlg.querySelector('[data-noshow]')?.addEventListener('click', () => { close(); markNoShow(card); });
-  dlg.querySelector('[data-cancelappt]')?.addEventListener('click', (e) => {
-    const b = e.currentTarget;
-    if (!b.dataset.sure) { b.dataset.sure = '1'; b.textContent = 'Click again to cancel it in Tekmetric'; b.classList.add('danger'); return; }
+  dlg.addEventListener('cancel', () => dlg.remove());
+  dlg.querySelector('form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const techId = Number(new FormData(e.target).get('tech'));
+    close(); if (techId !== current) assign(card, techId);
+  });
+  dlg.showModal();
+}
+
+// Edit a booked appointment: everything Tekmetric lets us change, plus the board's tech, hours and advisor.
+function openApptEdit(card) {
+  const b = state.board;
+  const was = wasAt(card);
+  const allT = b.columns.filter((c) => c.type === 'tech');
+  const cat = CAT_KEYS.includes(card.category) ? card.category : null;
+  const ride = ['LOANER', 'RIDE'].includes(card.rideOption) ? card.rideOption : 'NONE';
+  const dlg = document.createElement('dialog');
+  dlg.className = 'assign wide book';
+  dlg.innerHTML = `<form method="dialog" autocomplete="off">
+    <h2>Edit appointment</h2>
+    <p class="muted" style="margin:0"><b style="color:var(--ink)">${esc(card.customer)}</b> · ${esc(card.label)}${card.noShow ? ' · <span style="color:var(--red)">1 h past, not arrived</span>' : ''}</p>
+    <label class="field">Vehicle<select name="vehicle"><option value="${card.vehicleId ?? ''}">${esc(card.vehicle || 'Loading vehicles…')}</option></select></label>
+    <fieldset><legend>Type of work</legend><div class="kinds">
+      ${CAT_KEYS.map((c) => `<label class="kind" style="--bg:var(--c-${c}-bg);--bd:var(--c-${c}-bd);--dot:var(--c-${c}-dot)"><input type="radio" name="category" value="${c}" ${c === cat ? 'checked' : ''} required><i></i><span>${esc(CAT[c])}</span></label>`).join('')}
+    </div></fieldset>
+    <div class="field"><label for="ed-concern">Concern / work requested</label><textarea id="ed-concern" name="concern" rows="2" maxlength="500" required>${esc(card.description || card.work)}</textarea></div>
+    <div class="row3">
+      <label>Date<input type="date" name="date" value="${was.date}" required></label>
+      <label>Appointment<input type="time" name="time" step="900" value="${toHM(card.startHour)}" required></label>
+      <label>Drop-off <span class="muted">(optional)</span><input type="time" name="drop" step="900" value="${was.dropHour != null ? toHM(was.dropHour) : ''}"></label>
+    </div>
+    <div class="row3">
+      <label>Pick-up <span class="muted" data-pickreq>${ride === 'NONE' ? '(optional)' : '(required)'}</span><input type="time" name="pick" step="900" value="${card.pickupHour != null ? toHM(card.pickupHour) : ''}"></label>
+      <label>Est. hours<input type="number" name="hours" min="0.1" max="24" step="0.1" value="${card.hours.toFixed(1)}"></label>
+    </div>
+    <div class="row3">
+      <label style="grid-column:span 2">Technician<select name="tech"><option value="">Unassigned</option>${allT.map((t) => `<option value="${t.id}" ${t.id === card.assignedTechId ? 'selected' : ''}>${esc(t.name)} · ${t.out ? 'out' : t.open >= 0 ? `${t.open.toFixed(1)} h open` : `${Math.abs(t.open).toFixed(1)} h over`}</option>`).join('')}</select></label>
+      <label>Service advisor<select name="advisor"><option value="">None</option>${advisorList().map((a) => `<option value="${a.id}" ${a.id === card.advisorId ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select></label>
+    </div>
+    <fieldset><legend>Ride</legend><div class="chips" style="padding-left:0">
+      ${[['NONE', 'None'], ['LOANER', 'Loaner'], ['RIDE', 'Ride / shuttle']].map(([v, l]) => `<label class="chipopt"><input type="radio" name="ride" value="${v}" ${v === ride ? 'checked' : ''}><span>${l}</span></label>`).join('')}
+    </div></fieldset>
+    <p class="note">Date, time, vehicle, type, concern and ride are saved to the appointment in Tekmetric. Tech, hours and advisor are written to the RO when it opens (only where blank).</p>
+    <div class="actions minor">
+      <button type="button" class="btn" data-noshow>Mark no-show</button>
+      <button type="button" class="btn" data-cancelappt>Cancel appointment</button>
+    </div>
+    <div class="actions"><span style="flex:1"></span><button type="button" class="btn" data-cancel>Close</button><button type="submit" class="btn primary">Save</button></div>
+  </form>`;
+  document.body.appendChild(dlg);
+  const form = dlg.querySelector('form');
+  // a message shown while the window was open stays on screen after it closes
+  const close = () => { const t = dlg.querySelector('.toast'); if (t) document.body.appendChild(t); dlg.close(); dlg.remove(); };
+  dlg.querySelector('[data-cancel]').addEventListener('click', close);
+  dlg.addEventListener('cancel', () => dlg.remove());
+  dlg.querySelector('[data-noshow]').addEventListener('click', () => { close(); markNoShow(card); });
+  dlg.querySelector('[data-cancelappt]').addEventListener('click', (e) => {
+    const btn = e.currentTarget;
+    if (!btn.dataset.sure) { btn.dataset.sure = '1'; btn.textContent = 'Click again to cancel it in Tekmetric'; btn.classList.add('danger'); return; }
     close(); cancelAppt(card);
   });
-  dlg.querySelector('form').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const f = new FormData(e.target);
-    const techId = f.get('tech') ? Number(f.get('tech')) : current ?? null;
-    if (!isAppt) { close(); if (techId !== current) assign(card, techId); return; }
-    const hours = Number(f.get('hours')) || card.hours;
-    const date = f.get('date'); const startHour = fromHM(f.get('time')); const dropHour = fromHM(f.get('drop'));
-    if (dropHour != null && dropHour > startHour) return toast('Drop-off should be at or before the appointment time.', true);
-    const moved = date !== was.date || Math.abs(startHour - was.startHour) > 0.01 || (dropHour ?? null) !== (was.dropHour ?? null);
-    const retech = techId !== current || Math.abs(hours - card.hours) > 0.01;
-    close();
-    if (retech) {
-      try { await api('/api/assign', json('POST', { shopId: state.shopId, appointmentId: card.appointmentId, techId, hours })); }
-      catch (err) { if (err.message !== 'signed out') toast(err.message, true); return; }
-    }
-    const who = techCols().find((c) => c.id === techId)?.name;
-    if (moved) return changeAppt(card, { date, startHour, dropHour }, `${card.customer} moved to ${whenText(date, startHour)} in Tekmetric${retech && who ? ` · ${who}` : ''}`, was);
-    if (retech) { state.flash = card.key; toast(techId ? `${card.customer} → ${who} · ${hours.toFixed(1)} h` : 'Saved'); await load(true); }
+  form.addEventListener('change', (e) => {
+    if (e.target.name !== 'ride') return;
+    const need = e.target.value !== 'NONE';
+    dlg.querySelector('[data-pickreq]').textContent = need ? '(required)' : '(optional)';
+    if (need && !form.pick.value) form.pick.value = '17:00';
   });
-  dlg.addEventListener('cancel', () => dlg.remove());
+  // the customer's vehicles, so a different one can be picked
+  if (card.customerId) {
+    api(`/api/vehicles?shop=${state.shopId}&customerId=${card.customerId}`).then((r) => {
+      if (!r.vehicles.length) return;
+      form.vehicle.innerHTML = r.vehicles.map((v) => `<option value="${v.id}" ${v.id === card.vehicleId ? 'selected' : ''}>${esc(v.text)}${v.plate ? ` · ${esc(v.plate)}` : ''}</option>`).join('');
+    }).catch(() => {});
+  }
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const f = new FormData(form);
+    const date = f.get('date'); const startHour = fromHM(f.get('time')); const dropHour = fromHM(f.get('drop')); const pickHour = fromHM(f.get('pick'));
+    if (dropHour != null && dropHour > startHour) return toast('Drop-off should be at or before the appointment time.', true);
+    const rideNow = f.get('ride');
+    if (rideNow !== 'NONE' && pickHour == null) return toast('Add a pick-up time for the loaner or ride.', true);
+    const change = {};
+    const moved = date !== was.date || Math.abs(startHour - was.startHour) > 0.01 || (dropHour ?? null) !== (was.dropHour ?? null);
+    if (moved) Object.assign(change, { date, startHour, dropHour });
+    if (f.get('category') !== cat) change.category = f.get('category');
+    if (String(f.get('concern')).trim() !== String(card.description || card.work).trim()) change.concern = f.get('concern');
+    if (f.get('vehicle') && Number(f.get('vehicle')) !== card.vehicleId) change.vehicleId = Number(f.get('vehicle'));
+    if (rideNow !== ride || (pickHour ?? null) !== (card.pickupHour ?? null)) Object.assign(change, { rideOption: rideNow, pickupHour: pickHour });
+    const techId = f.get('tech') ? Number(f.get('tech')) : null;
+    const hours = Number(f.get('hours')) || card.hours;
+    const advisorId = f.get('advisor') ? Number(f.get('advisor')) : null;
+    const retech = techId !== (card.assignedTechId ?? null) || Math.abs(hours - card.hours) > 0.01;
+    const readv = advisorId !== (card.advisorId ?? null);
+    const btn = form.querySelector('[type=submit]'); btn.disabled = true; btn.textContent = 'Saving…';
+    try {
+      if (retech) await api('/api/assign', json('POST', { shopId: state.shopId, appointmentId: card.appointmentId, techId, hours }));
+      if (readv) await api('/api/advisor', json('POST', { shopId: state.shopId, appointmentId: card.appointmentId, advisorId }));
+    } catch (err) { btn.disabled = false; btn.textContent = 'Save'; if (err.message !== 'signed out') toast(err.message, true); return; }
+    if (!Object.keys(change).length) {
+      close(); state.flash = card.key; toast(retech || readv ? `${card.customer}: saved` : 'No changes'); if (retech || readv) await load(true); return;
+    }
+    const onlyMoved = Object.keys(change).every((k) => ['date', 'startHour', 'dropHour'].includes(k));
+    const ok = await changeAppt(card, change, moved ? `${card.customer} moved to ${whenText(date, startHour)} in Tekmetric` : `${card.customer}'s appointment updated in Tekmetric`, onlyMoved ? was : null);
+    if (ok) close(); else { btn.disabled = false; btn.textContent = 'Save'; }
+  });
   dlg.showModal();
 }
 
 // ---------- booking ----------
 const KIND_HOURS = { red: 3, yellow: 1, blue: 1.5, green: 1, purple: 2 };
+const CAT_KEYS = ['red', 'yellow', 'blue', 'green', 'purple'];
 function openBook(pre = {}) {
   const b = state.board;
   const allT = b.columns.filter((c) => c.type === 'tech');

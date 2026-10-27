@@ -294,3 +294,11 @@ dialog.assign fieldset[hidden], dialog.assign input[hidden] { display: none; }
 .colhead { position: sticky; top: 0; z-index: 6; background: #fff; }
 .colhead.un.pin1 { top: 0; z-index: 8; }
 .corner { position: sticky; top: 0; left: 0; z-index: 9; background: var(--soft); border-bottom: 1px solid var(--line); }
+dialog.assign label.field { font-size: 12px; font-weight: 600; color: var(--muted); }
+.techrow .grip { cursor: grab; color: var(--muted); font-size: 14px; letter-spacing: -2px; padding: 0 2px; user-select: none; }
+.techrow.dragging { opacity: .5; background: var(--soft); }
+.techrow .moves { display: flex; flex-direction: column; }
+.techrow .mv { border: 1px solid var(--line); background: #fff; color: var(--muted); width: 32px; height: 22px; font-size: 10px; line-height: 1; padding: 0; }
+.techrow .mv:first-child { border-radius: 6px 6px 0 0; }
+.techrow .mv:last-child { border-radius: 0 0 6px 6px; border-top: 0; }
+.techrow .mv:hover { color: var(--ink); }

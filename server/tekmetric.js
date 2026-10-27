@@ -70,32 +70,46 @@ export function createTekmetricClient({ clientId, clientSecret, environment = 's
     return out;
   }
 
-  // Customer and vehicle names: the board never waits on these. Whatever isn't cached yet
-  // is fetched in the background, and shows up on the next refresh.
-  // One name at a time, so board requests never queue behind a long list of names.
+  // Customer and vehicle names: the board never waits on these. Whatever isn't loaded yet is fetched in
+  // the background (a customer and their vehicle together, a few at a time) and shows on the next refresh.
+  // A lookup Tekmetric refuses is logged once with the reason and not retried for 10 minutes.
+  const names = new Map(); // 'customers/12' -> { data } | { failed: status, at }
   const queued = new Set();
   const queue = [];
-  let working = false;
-  const peek = (path) => cache.get(path)?.data;
-  async function work() {
-    if (working) return;
-    working = true;
-    while (queue.length) {
-      const p = queue.shift();
-      await get(p, 3_600_000).catch(() => {});
-      queued.delete(p);
+  let workers = 0;
+  const unwrap = (d) => (d?.data && typeof d.data === 'object' && d.data.id ? d.data : d);
+  const nameKey = (kind, id) => `${kind}/${id}`;
+  async function fetchName(key, onLoaded) {
+    try {
+      const data = unwrap(await request('GET', `/api/v1/${key}`));
+      names.set(key, { data });
+      onLoaded?.(key, data);
+    } catch (e) {
+      const status = /failed \((\d+)\)/.exec(e.message)?.[1] ?? 'error';
+      if (!names.get(key)?.failed) console.error(`Name lookup ${key} failed: ${e.message.slice(0, 220)}`);
+      names.set(key, { failed: status, at: Date.now() });
     }
-    working = false;
   }
-  function warm(paths) {
-    for (const p of paths) if (!queued.has(p) && !cache.has(p)) { queued.add(p); queue.push(p); }
-    work();
+  async function work(onLoaded) {
+    workers++;
+    while (queue.length) { const k = queue.shift(); await fetchName(k, onLoaded); queued.delete(k); }
+    workers--;
   }
+  const needs = (k) => { const n = names.get(k); return !queued.has(k) && (!n || (n.failed && Date.now() - n.at > 600_000)); };
+  function warm(pairs, onLoaded) {
+    for (const k of pairs) if (k && needs(k)) { queued.add(k); queue.push(k); }
+    while (workers < 3 && queue.length) work(onLoaded);
+  }
+  const peekName = (kind, id) => names.get(nameKey(kind, id))?.data;
 
   return {
-    peekCustomer: (id) => peek(`/api/v1/customers/${id}`),
-    peekVehicle: (id) => peek(`/api/v1/vehicles/${id}`),
-    warmNames: (custIds, vehIds) => warm([...custIds.map((id) => `/api/v1/customers/${id}`), ...vehIds.map((id) => `/api/v1/vehicles/${id}`)]),
+    peekCustomer: (id) => peekName('customers', id),
+    peekVehicle: (id) => peekName('vehicles', id),
+    nameFailed: (kind, id) => names.get(nameKey(kind, id))?.failed ?? null,
+    // pairs: [[customerId, vehicleId], …] so each customer and their vehicle arrive together
+    warmNames: (pairs, onLoaded) => warm(pairs.flatMap(([c, v]) => [c ? nameKey('customers', c) : null, v ? nameKey('vehicles', v) : null]), onLoaded),
+    // names saved from an earlier run
+    primeNames: (entries) => { for (const [key, data] of entries) if (!names.get(key)?.data) names.set(key, { data }); },
     getShops: () => get('/api/v1/shops'),
     getEmployees: (shop) => getAll('/api/v1/employees', { shop }),
     getAppointments: (shop, startIso, endIso) =>
@@ -103,8 +117,6 @@ export function createTekmetricClient({ clientId, clientSecret, environment = 's
     // statusIds: 1 Estimate, 2 WIP, 3 Complete, 4 Saved, 5 Posted, 6 A/R
     getRepairOrders: (shop, params = {}) => getAll('/api/v1/repair-orders', { shop, ...params }),
     // Names change rarely, so these are cached for an hour.
-    getCustomer: (id) => get(`/api/v1/customers/${id}`, 3_600_000),
-    getVehicle: (id) => get(`/api/v1/vehicles/${id}`, 3_600_000),
     // booking form: never cached, so new customers and vehicles show up right away
     searchCustomers: async (shop, search) => {
       const data = await request('GET', `/api/v1/customers?${new URLSearchParams({ shop, search, size: '25' })}`);

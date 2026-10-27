@@ -8,7 +8,7 @@ import express from 'express';
 import { createTekmetricClient } from './tekmetric.js';
 import { createMockClient, demoNow } from './mock.js';
 import { createAuth } from './auth.js';
-import { buildBoard } from './board.js';
+import { buildBoard, sortTechs } from './board.js';
 import { buildMonth, buildWeek } from './views.js';
 import { settings } from './config.js';
 import { localDate } from './time.js';
@@ -160,7 +160,8 @@ app.post('/api/availability', auth.require, async (req, res, next) => {
 app.get('/api/techs', auth.require, async (req, res, next) => {
   try {
     const shopId = Number(req.query.shop);
-    const [list, settingsMap] = await Promise.all([techList(shopId), store.getTechSettings(shopId)]);
+    const [all, settingsMap] = await Promise.all([techList(shopId), store.getTechSettings(shopId)]);
+    const list = sortTechs(all, settingsMap);
     res.json({ techs: list.map((t) => ({ id: t.id, name: `${t.firstName ?? ''} ${t.lastName ?? ''}`.trim(), role: t.employeeRole?.name ?? '', show: settingsMap.get(t.id)?.show !== false, capacity: settingsMap.get(t.id)?.capacity ?? settings.defaultCapacityHours })) });
   } catch (e) { next(e); }
 });
@@ -172,6 +173,7 @@ app.post('/api/techs', auth.require, async (req, res, next) => {
       const v = {};
       if (typeof c.show === 'boolean') v.show = c.show;
       if (c.capacity != null && Number(c.capacity) >= 0 && Number(c.capacity) <= 16) v.capacity = Math.round(Number(c.capacity) * 10) / 10;
+      if (Number.isInteger(c.order) && c.order >= 0 && c.order < 500) v.order = c.order;
       return [Number(c.techId), v];
     });
     await store.setTechSettings(shopId, entries);

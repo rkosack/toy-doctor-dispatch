@@ -3,7 +3,7 @@
 
 import { settings } from './config.js';
 import { addDays, localDate, localHours, weekday, zonedTime } from './time.js';
-import { colorCategory, dropHour, isWaiter, personName, vehicleText } from './board.js';
+import { colorCategory, dropHour, isWaiter, loadNames, nameOf, personName } from './board.js';
 import { availableHours } from './availability.js';
 
 const TZ = settings.timeZone;
@@ -38,13 +38,7 @@ async function gather(client, store, shopId, first, last, withNames) {
   const empById = new Map(employees.map((e) => [e.id, e]));
 
   let namesPending = 0; let name = () => ({ customer: '', vehicle: '' });
-  if (withNames) {
-    const missC = []; const missV = [];
-    for (const a of liveAppts) { if (!client.peekCustomer(a.customerId)) missC.push(a.customerId); if (a.vehicleId && !client.peekVehicle(a.vehicleId)) missV.push(a.vehicleId); }
-    if (missC.length || missV.length) client.warmNames([...new Set(missC)], [...new Set(missV)]);
-    namesPending = missC.length + missV.length;
-    name = (a) => { const c = client.peekCustomer(a.customerId); return { customer: c ? c.lastName || c.firstName || 'Customer' : 'Loading name…', vehicle: vehicleText(client.peekVehicle(a.vehicleId)) || 'vehicle…' }; };
-  }
+  if (withNames) { namesPending = await loadNames(client, store, liveAppts.map((a) => [a.customerId, a.vehicleId])); name = (a) => nameOf(client, a); }
 
   const out = days.map((d) => {
     const closed = !settings.workDays.includes(weekday(d));

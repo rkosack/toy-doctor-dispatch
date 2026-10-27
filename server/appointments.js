@@ -26,6 +26,7 @@ const iso = (d) => new Date(d).toISOString().replace(/\.\d{3}Z$/, 'Z');
 const at = (date, hour) => iso(zonedTime(date, Math.floor(hour), Math.round((hour % 1) * 60), TZ));
 const rgb = (hex) => { const n = parseInt(String(hex).replace('#', ''), 16); return [n >> 16, (n >> 8) & 255, n & 255]; };
 const isHex = (h) => /^#?[0-9a-f]{6}$/i.test(h ?? '');
+const str = (x) => (typeof x === 'string' || typeof x === 'number' ? String(x) : x?.name ?? '');
 const code = (v) => (typeof v === 'string' ? v : v?.code ?? v?.name ?? null);
 
 export function colorName(hex, palette) {
@@ -120,8 +121,8 @@ export async function searchCustomers(client, shopId, q) {
 export async function customerVehicles(client, shopId, customerId) {
   const list = await client.getVehicles(shopId, customerId);
   return list.filter((v) => !v.deletedDate).map((v) => ({
-    id: v.id, model: v.model || v.make || 'Vehicle',
-    text: [v.year, v.make, v.model, v.subModel].filter(Boolean).join(' ') || 'Vehicle',
+    id: v.id, model: str(v.model) || str(v.make) || 'Vehicle',
+    text: [v.year, v.make, v.model, v.subModel].map(str).filter(Boolean).join(' ') || `Vehicle #${v.id}`,
     plate: v.licensePlate ?? '',
   }));
 }
@@ -208,8 +209,43 @@ export async function changeAppointment(ctx, id, input) {
       else if (appt.dropoffTime) changes.dropoffTime = changes.startTime; // no separate drop-off: same as the appointment
     }
   }
+  // ---- the rest of the appointment: type of work, concern, vehicle, ride ----
+  if (input.category != null) {
+    if (!CATEGORY_COLOR[input.category]) throw new UserError('Pick the type of work.');
+    changes.color = CATEGORY_COLOR[input.category];
+  }
+  if (input.concern != null) {
+    const concern = String(input.concern).trim().slice(0, 500);
+    if (!concern) throw new UserError('Add the concern or work requested.');
+    if (concern !== (appt.description ?? '')) changes.description = concern;
+  }
+  if (input.vehicleId != null && Number(input.vehicleId) !== Number(appt.vehicleId)) {
+    const list = appt.customerId ? await client.getVehicles(shopId, appt.customerId) : [];
+    if (!list.some((v) => v.id === Number(input.vehicleId))) throw new UserError('That vehicle isn\'t on this customer\'s account.');
+    changes.vehicleId = Number(input.vehicleId);
+  }
+  if (input.rideOption != null) {
+    const ride = ['LOANER', 'RIDE', 'NONE'].includes(input.rideOption) ? input.rideOption : 'NONE';
+    const had = code(appt.rideOption);
+    const start = changes.startTime ?? appt.startTime;
+    const day = localDate(new Date(start), TZ);
+    const pick = input.pickupHour == null || input.pickupHour === '' ? null : quarter(input.pickupHour);
+    if (ride !== 'NONE') {
+      if (pick == null) throw new UserError('Add a pick-up time for the loaner or ride.');
+      // Tekmetric needs both times with a ride option
+      changes.rideOption = ride;
+      changes.pickupTime = at(day, pick);
+      changes.dropoffTime = changes.dropoffTime ?? appt.dropoffTime ?? start;
+      if (new Date(changes.pickupTime) <= new Date(changes.dropoffTime)) throw new UserError('Pick-up should be after drop-off.');
+    } else if (['LOANER', 'RIDE'].includes(had)) {
+      changes.rideOption = 'NONE';
+      changes.dropoffTime = changes.dropoffTime ?? appt.dropoffTime ?? start;
+      changes.pickupTime = pick != null ? at(day, pick) : changes.pickupTime ?? appt.pickupTime ?? changes.endTime ?? appt.endTime;
+    } else if (pick != null) changes.pickupTime = at(day, pick);
+  }
   if (!Object.keys(changes).length) return { ok: true, unchanged: true };
   const body = updateBody(appt, changes, palette);
+  if (changes.rideOption) body.rideOption = changes.rideOption; // an explicit change is always sent
   await client.patchAppointment(appt.id, body);
   client.clearCache();
   // a board plan belongs to the day it was made for
