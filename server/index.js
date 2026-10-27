@@ -8,7 +8,7 @@ import express from 'express';
 import { createTekmetricClient } from './tekmetric.js';
 import { createMockClient, demoNow } from './mock.js';
 import { createAuth } from './auth.js';
-import { buildBoard, sortTechs } from './board.js';
+import { buildBoard, pickAdvisors, sortTechs } from './board.js';
 import { buildMonth, buildWeek } from './views.js';
 import { settings, shopLabel } from './config.js';
 import { localDate } from './time.js';
@@ -178,6 +178,31 @@ app.post('/api/techs', auth.require, async (req, res, next) => {
     });
     await store.setTechSettings(shopId, entries);
     res.json({ ok: true, changed: entries.length });
+  } catch (e) { next(e); }
+});
+
+// Manage advisors: who gets a column on the Day – Service Advisor view, and in what order (per location).
+app.get('/api/advisors', auth.require, async (req, res, next) => {
+  try {
+    const shopId = Number(req.query.shop);
+    const employees = await client.getEmployees(shopId);
+    const { list } = await pickAdvisors(client, shopId, employees, store);
+    const shown = new Set(list.map((e) => e.id));
+    const active = employees.filter((e) => !e.disabled);
+    // shown first (in order), then everyone else who isn't a tech, then techs
+    const rest = active.filter((e) => !shown.has(e.id)).sort((a, b) => Number(a.canPerformWork) - Number(b.canPerformWork) || `${a.firstName} ${a.lastName}`.localeCompare(`${b.firstName} ${b.lastName}`));
+    res.json({ advisors: [...list, ...rest].map((e) => ({ id: e.id, name: `${e.firstName ?? ''} ${e.lastName ?? ''}`.trim(), role: e.employeeRole?.name ?? '', tech: Boolean(e.canPerformWork), show: shown.has(e.id) })) });
+  } catch (e) { next(e); }
+});
+app.post('/api/advisors', auth.require, async (req, res, next) => {
+  try {
+    const shopId = Number(req.body?.shopId);
+    const valid = new Set((await client.getEmployees(shopId)).map((e) => e.id));
+    const people = {};
+    (req.body?.order ?? []).filter((id) => valid.has(Number(id))).forEach((id, i) => { people[Number(id)] = { show: (req.body.show ?? []).map(Number).includes(Number(id)), order: i }; });
+    if (!Object.values(people).some((p) => p.show)) return res.status(400).json({ error: 'Pick at least one advisor.' });
+    await store.setMeta(`advisors-${shopId}`, { people, by: req.user.email, at: new Date().toISOString() });
+    res.json({ ok: true, shown: Object.values(people).filter((p) => p.show).length });
   } catch (e) { next(e); }
 });
 

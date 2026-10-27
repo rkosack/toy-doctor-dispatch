@@ -95,8 +95,15 @@ const initials = (e) => `${(e.firstName ?? ' ')[0]}${(e.lastName ?? ' ')[0]}`.to
 // The shop's service advisors: the names in settings.advisors for this location, matched to Tekmetric
 // employees by first name (exact, else the first 3 letters, e.g. Nick = Nicholas). Without a list for the
 // location, everyone who isn't set up to do work.
-async function pickAdvisors(client, shopId, employees) {
+// Once "Manage advisors" has been saved for a location, that choice (who shows, in what order) is used instead.
+export async function pickAdvisors(client, shopId, employees, store = null) {
   const active = employees.filter((e) => !e.disabled);
+  const saved = store?.getMeta ? await store.getMeta(`advisors-${shopId}`).catch(() => null) : null;
+  const picks = saved?.people && Object.keys(saved.people).length ? saved.people : null;
+  if (picks) {
+    const list = active.filter((e) => picks[e.id]?.show).sort((a, b) => (picks[a.id].order ?? 999) - (picks[b.id].order ?? 999));
+    return { list, missing: [], managed: true };
+  }
   const shop = (await client.getShops()).find((x) => x.id === Number(shopId));
   const label = lc([settings.shopNames[shopId], shop?.nickname, shop?.name, shop?.address?.city].filter(Boolean).join(' '));
   const names = Object.entries(settings.advisors ?? {}).find(([loc]) => label.includes(lc(loc)))?.[1];
@@ -348,12 +355,17 @@ export async function buildBoard(client, { shopId, date, now = new Date(), store
   // ---- Day – Service Advisor view: one column per advisor ----
   // Today's customers on a timeline at their drop-off / waiter time, one card per RO or appointment,
   // plus each advisor's ROs waiting on authorization.
-  const { list: advisors, missing: advisorsMissing } = await pickAdvisors(client, shopId, employees);
+  const { list: advisors, missing: advisorsMissing, managed } = await pickAdvisors(client, shopId, employees, store);
   const advCols = new Map([['unassigned', { id: 'unassigned', type: 'unassigned', name: 'Unassigned', cards: [], waiting: [] }]]);
   for (const e of advisors) advCols.set(e.id, { id: e.id, type: 'advisor', name: personName(e), initials: initials(e), cards: [], waiting: [] });
   const advCol = (id) => {
     if (id && advCols.has(id)) return advCols.get(id);
     const e = id && empById.get(id);
+    // set up in "Manage advisors": anyone else who wrote an RO goes in one "Other writers" column
+    if (e && managed) {
+      if (!advCols.has('other')) advCols.set('other', { id: 'other', type: 'other', name: 'Other writers', initials: '…', cards: [], waiting: [] });
+      return advCols.get('other');
+    }
     if (e) { advCols.set(e.id, { id: e.id, type: 'advisor', name: personName(e), initials: initials(e), cards: [], waiting: [] }); return advCols.get(e.id); }
     return advCols.get('unassigned');
   };

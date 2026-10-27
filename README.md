@@ -6,7 +6,8 @@ A dispatch board on top of Tekmetric for the Denver and Littleton shops.
 
 **What's in step 1**
 - **Views:** Day – Technician, Day – Service Advisor, Week, Month (the last one used is remembered)
-- **Day – Service Advisor:** one column per advisor with today's customers at their drop-off / waiter time (one card per RO or appointment), and each advisor's ROs waiting on authorization (Pending Authorization / Estimating), oldest first. Pick an advisor on a booked appointment (click or drag); it's written to the RO's service writer when the RO opens, only if it has none. An open RO with no service writer gets it right away.
+- **Day – Service Advisor:** "Manage advisors" picks who gets a column and their order, per location (ROs by anyone else go in "Other writers").
+- **Day – Service Advisor (details):** one column per advisor with today's customers at their drop-off / waiter time (one card per RO or appointment), and each advisor's ROs waiting on authorization (Pending Authorization / Estimating), oldest first. Pick an advisor on a booked appointment (click or drag); it's written to the RO's service writer when the RO opens, only if it has none. An open RO with no service writer gets it right away.
 - **Week:** each day's appointments by time with type color, tech and hours, and booked hours vs. tech capacity (Near full / Over). Drag a not-arrived appointment to another day to move it in Tekmetric; "+ Book" on any day.
 - **Month:** calendar with appointments and booked hours vs. capacity per day; click a day to open it.
 - Booking also picks the service advisor (defaults to whoever is signed in, if they're a Tekmetric employee)

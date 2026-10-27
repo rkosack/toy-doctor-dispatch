@@ -128,7 +128,7 @@ function render() {
     ${state.error ? `<div class="error" role="alert">${esc(state.error)}</div>` : ''}
     ${v === 'week' ? (state.week ? weekView(state.week) : state.error ? '' : '<div class="loading">Loading the week…</div>')
     : v === 'month' ? (state.month ? monthView(state.month) : state.error ? '' : '<div class="loading">Loading the month…</div>')
-    : v === 'advisor' ? (b ? `${weekStrip(b)}${noShowBanners(b)}${advisorSummary(b)}${advisorBoard(b)}<p class="foot">Customers due today at their drop-off or waiter time, one card per RO or appointment. Pick an advisor on a booked appointment and it's written to the RO's service writer when the RO opens (only if it has none). Waiting on authorization lists each advisor's open ROs labeled Pending Authorization, Estimating or NEEDS DEPOSIT, oldest first. Updates every minute.</p>` : state.error ? '' : '<div class="loading">Loading the board…</div>')
+    : v === 'advisor' ? (b ? `${weekStrip(b)}${noShowBanners(b)}${advisorSummary(b)}${advisorToolbar(b)}${advisorBoard(b)}<p class="foot">Customers due today at their drop-off or waiter time, one card per RO or appointment. Pick an advisor on a booked appointment and it's written to the RO's service writer when the RO opens (only if it has none). Waiting on authorization lists each advisor's open ROs labeled Pending Authorization, Estimating or NEEDS DEPOSIT, oldest first. Updates every minute.</p>` : state.error ? '' : '<div class="loading">Loading the board…</div>')
     : b ? `${weekStrip(b)}${noShowBanners(b)}${summary(b)}${techToolbar(b)}${board(b)}
       <p class="foot">Active load counts sold hours on ROs labeled All Parts Here or In Progress, or promised today. Today's not-arrived appointments always count (1.0 h unless hours were set when assigning). An assigned tech is written to the RO when it opens, only if the RO has no tech yet. Dragging an open RO to another tech (or picking one on the card) moves that tech's jobs on it in Tekmetric right away, with Undo. Parts hold and offsite hours show separately. Pay period = sold hours on ROs marked Complete, 1st–15th and 16th–end of month. Pace = completed − days worked × daily capacity. Carry-over work starts in the afternoon (1:00) so mornings stay open for incoming cars; drag any card to the time a tech will work on it. That plan is for the board only and never moves the customer's appointment in Tekmetric. To move the appointment itself, open the card and change its time, or drag it onto a day above. Click an open time in a tech's column to book there. Updates every minute.</p>`
       : state.error ? '' : '<div class="loading">Loading the board…</div>'}
@@ -842,6 +842,72 @@ function advisorSummary(b) {
   </section>`;
 }
 
+function advisorToolbar(b) {
+  const n = b.advisorView.columns.filter((c) => c.type === 'advisor').length;
+  const other = b.advisorView.columns.find((c) => c.type === 'other');
+  return `<div class="toolbar">
+    <span style="font-size:13px;font-weight:600">Advisors</span>
+    <span class="muted" style="font-size:12px">${n} on the board${other ? ` · ${other.cards.length + other.waiting.length} RO${other.cards.length + other.waiting.length === 1 ? '' : 's'} by other writers` : ''}</span>
+    <button type="button" class="btn" data-manage-adv style="margin-left:auto">Manage advisors</button>
+  </div>`;
+}
+
+// drag a row or use its arrows to reorder a list in a dialog
+function bindReorder(listEl, rowSel) {
+  listEl.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-mv]'); if (!btn) return;
+    const row = btn.closest(rowSel);
+    if (btn.dataset.mv === '-1' && row.previousElementSibling) row.previousElementSibling.before(row);
+    if (btn.dataset.mv === '1' && row.nextElementSibling) row.nextElementSibling.after(row);
+    btn.focus();
+  });
+  let dragRow = null;
+  listEl.addEventListener('dragstart', (e) => { dragRow = e.target.closest(rowSel); dragRow?.classList.add('dragging'); e.dataTransfer.effectAllowed = 'move'; });
+  listEl.addEventListener('dragend', () => { dragRow?.classList.remove('dragging'); dragRow = null; });
+  listEl.addEventListener('dragover', (e) => {
+    if (!dragRow) return; e.preventDefault();
+    const over = e.target.closest(rowSel); if (!over || over === dragRow) return;
+    const r = over.getBoundingClientRect();
+    if (e.clientY < r.top + r.height / 2) over.before(dragRow); else over.after(dragRow);
+  });
+}
+
+async function openManageAdvisors() {
+  let list;
+  try { list = (await api(`/api/advisors?shop=${state.shopId}`)).advisors; } catch (e) { return toast(e.message, true); }
+  const shop = state.shops.find((x) => x.id === state.shopId)?.name ?? '';
+  const dlg = document.createElement('dialog');
+  dlg.className = 'assign wide';
+  dlg.innerHTML = `<form method="dialog">
+    <h2>Manage advisors${shop ? ` · ${esc(shop)}` : ''}</h2>
+    <p class="muted" style="margin:0;font-size:13px">Check who gets a column on the Service Advisor view, and set the order (drag a row or use the arrows). ROs written by anyone unchecked go in one "Other writers" column.</p>
+    <input type="search" placeholder="Search names" aria-label="Search people" style="height:44px;border:1px solid var(--line);border-radius:8px;padding:0 10px;font:inherit">
+    <div class="techlist">${list.map((a) => `<div class="techrow" draggable="true" data-id="${a.id}" data-name="${esc(a.name.toLowerCase())}">
+      <span class="grip" aria-hidden="true">⋮⋮</span>
+      <span class="moves"><button type="button" class="mv" data-mv="-1" aria-label="Move ${esc(a.name)} up">▲</button><button type="button" class="mv" data-mv="1" aria-label="Move ${esc(a.name)} down">▼</button></span>
+      <label style="display:flex;align-items:center;gap:10px;flex:1;min-width:0;min-height:44px"><input type="checkbox" name="show" value="${a.id}" ${a.show ? 'checked' : ''}><span class="t">${esc(a.name)}</span><small class="muted">${esc(a.role || (a.tech ? 'Technician' : ''))}</small></label>
+    </div>`).join('')}</div>
+    <div class="actions"><span style="flex:1"></span><button type="button" class="btn" data-cancel>Cancel</button><button type="submit" class="btn primary">Save</button></div>
+  </form>`;
+  document.body.appendChild(dlg);
+  const form = dlg.querySelector('form'); const listEl = dlg.querySelector('.techlist');
+  const close = () => { const t = dlg.querySelector('.toast'); if (t) document.body.appendChild(t); dlg.close(); dlg.remove(); };
+  dlg.querySelector('[data-cancel]').addEventListener('click', close);
+  dlg.addEventListener('cancel', () => dlg.remove());
+  bindReorder(listEl, '.techrow');
+  dlg.querySelector('input[type=search]').addEventListener('input', (e) => { const q = e.target.value.toLowerCase(); dlg.querySelectorAll('.techrow').forEach((r) => { r.hidden = !r.dataset.name.includes(q); }); });
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const order = [...listEl.querySelectorAll('.techrow')].map((r) => Number(r.dataset.id));
+    const show = [...form.querySelectorAll('input[name=show]:checked')].map((c) => Number(c.value));
+    try {
+      const r = await api('/api/advisors', json('POST', { shopId: state.shopId, order, show }));
+      close(); toast(`Saved · ${r.shown} advisor${r.shown === 1 ? '' : 's'} on the board`); await load(true);
+    } catch (err) { if (err.message !== 'signed out') toast(err.message, true); }
+  });
+  dlg.showModal();
+}
+
 // SA cards: appointments can always get an advisor; an RO only if it has no service writer yet
 const saPickable = (k) => k.kind === 'appt' || (k.kind === 'ro' && !k.advisorId && k.state !== 'done');
 function saCard(k, col, start) {
@@ -869,7 +935,9 @@ function advisorBoard(b) {
   const band = (end > b.hours.close ? `<div class="closed-band" style="top:${(b.hours.close - start) * HOUR}px;height:${(end - b.hours.close) * HOUR}px" aria-hidden="true"></div>` : '')
     + (start < b.hours.open ? `<div class="closed-band" style="top:0;height:${(b.hours.open - start) * HOUR}px" aria-hidden="true"></div>` : '');
   let times = ''; for (let h = start; h < end; h++) times += `<span style="top:${(h - start) * HOUR}px">${fmtHour(h)}</span>`;
-  const head = (c) => c.type === 'unassigned'
+  const head = (c) => c.type === 'other'
+    ? `<div class="colhead"><span class="nm" style="font-weight:600">Other writers</span><span class="sub">${c.appts} customer${c.appts === 1 ? '' : 's'}${c.waiting.length ? ` · ${c.waiting.length} waiting` : ''}</span><span class="sub">ROs written by people not on the advisor list. Change the list in Manage advisors.</span></div>`
+    : c.type === 'unassigned'
     ? `<div class="colhead un ${'pin1'}"><span class="nm" style="font-weight:600">No advisor yet</span><span class="sub">${c.appts} customer${c.appts === 1 ? '' : 's'}</span><span class="sub">Click a card or drag it onto an advisor. It's written to the RO's service writer when the RO opens.</span></div>`
     : `<div class="colhead"><div class="who"><div class="avatar">${esc(c.initials)}</div><div style="min-width:0"><span class="nm t" style="display:block">${esc(c.name)}</span><small>${c.appts} customer${c.appts === 1 ? '' : 's'} · ${c.waiters} waiter${c.waiters === 1 ? '' : 's'}</small></div>${c.waiting.length ? `<span class="pill over">${c.waiting.length} to call</span>` : ''}</div>
       <span class="sub">${c.notArrived ? `${c.notArrived} not arrived yet` : 'Everyone has arrived'}</span></div>`;
@@ -978,6 +1046,7 @@ function monthView(m) {
 }
 
 function bindViews() {
+  app.querySelector('[data-manage-adv]')?.addEventListener('click', openManageAdvisors);
   // advisor view: click or drag a card onto an advisor
   app.querySelectorAll('[data-sa]').forEach((el) => {
     const k = () => state.board.advisorView.columns.flatMap((c) => c.cards).find((x) => x.key === el.dataset.sa);
@@ -992,6 +1061,7 @@ function bindViews() {
       lane.classList.remove('drop'); if (!state.drag?.sa) return; e.preventDefault();
       const k = state.board.advisorView.columns.flatMap((c) => c.cards).find((x) => x.key === state.drag.sa); state.drag = null;
       if (!k) return;
+      if (lane.dataset.sadrop === 'other') return toast('Drop it on an advisor instead.', true);
       const id = lane.dataset.sadrop === 'unassigned' ? null : Number(lane.dataset.sadrop);
       if (id === (k.advisorId ?? null)) return;
       if (id == null && k.kind === 'ro') return toast('An open RO keeps its service writer in Tekmetric. Change it there.', true);
