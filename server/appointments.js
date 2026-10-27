@@ -66,6 +66,18 @@ export function updateBody(appt, changes, palette) {
   return Object.fromEntries(Object.entries(body).filter(([, v]) => v !== undefined && v !== null));
 }
 
+// Saves an appointment. Tekmetric refuses customer and vehicle on follow-up appointments (ones made from an
+// RO), even unchanged, so when it says so the save is retried without them (they can't change anyway).
+export async function patchAppt(client, id, body, vehicleChanged) {
+  try { return await client.patchAppointment(id, body); }
+  catch (e) {
+    if (!/follow-up/i.test(e.message)) throw e;
+    if (vehicleChanged) throw new UserError('This is a follow-up appointment from an RO, so Tekmetric doesn\'t allow changing its vehicle.');
+    const { customerId, vehicleId, ...rest } = body;
+    return client.patchAppointment(id, rest);
+  }
+}
+
 // ---- color check: learn Tekmetric's hex for each color name, once ----
 let paletteCache = null;
 export async function getPalette({ client, store, env }) {
@@ -246,7 +258,7 @@ export async function changeAppointment(ctx, id, input) {
   if (!Object.keys(changes).length) return { ok: true, unchanged: true };
   const body = updateBody(appt, changes, palette);
   if (changes.rideOption) body.rideOption = changes.rideOption; // an explicit change is always sent
-  await client.patchAppointment(appt.id, body);
+  await patchAppt(client, appt.id, body, Boolean(changes.vehicleId));
   client.clearCache();
   // a board plan belongs to the day it was made for
   if (newDate !== oldDate || changes.status === 'NO_SHOW' || changes.status === 'CANCELED') await store.setPlan(shopId, oldDate, `appt-${appt.id}`, null);
@@ -283,7 +295,7 @@ export async function tagAppointment(ctx, { shopId, appointmentId, techId, emplo
     const title = taggedTitle(appt.title, techTag(tech), employees);
     if (title === appt.title) return { tagged: true, unchanged: true };
     const palette = await paletteOrCheck(ctx, Number(shopId));
-    await client.patchAppointment(appt.id, updateBody(appt, { title }, palette));
+    await patchAppt(client, appt.id, updateBody(appt, { title }, palette), false);
     client.clearCache();
     return { tagged: true, title };
   } catch (e) {

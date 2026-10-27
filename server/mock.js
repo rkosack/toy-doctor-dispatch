@@ -109,6 +109,7 @@ function generate(shop) {
       const start = zonedTime(d, 8 + Math.floor(slot / 2), (slot % 2) * 30, TZ);
       const end = new Date(start.getTime() + 3600_000);
       const appt = { id: shop * 100000 + (Math.round(Date.parse(d) / 864e5) % 900) * 100 + i, shopId: shop, customerId: custId, vehicleId: vehId, startTime: start.toISOString().replace('.000', ''), endTime: end.toISOString().replace('.000', ''), title: `${customers.get(custId).lastName} – ${model}`, description: work, color: COLORS[cat], arrived: null, appointmentStatus: 'NONE', dropoffTime: cat !== 'green' && i % 2 === 0 ? new Date(start.getTime() - 3600_000).toISOString() : null, appointmentOption: cat === 'green' ? { id: 1, code: 'STAY', name: 'Stay With Vehicle' } : { id: 2, code: 'DROP', name: 'Drop-off Vehicle' }, deletedDate: null, _hours: hours, _work: work };
+      if (i % 4 === 3) appt.appointmentType = 'FOLLOW_UP';
       appts.push(appt);
       const r2 = rng(`${shop}-${d}-${i}-ro`); // separate stream so the day's appointments never change with the clock
 
@@ -207,6 +208,7 @@ export function createMockClient() {
       if (events.has(id)) { Object.assign(events.get(id), fromBody(body)); return { type: 'SUCCESS', data: id }; }
       const a = [...pools.values()].flatMap((p) => p.appts).find((x) => x.id === id);
       if (!a) throw new Error('Tekmetric PATCH /api/v1/appointments failed (404)');
+      if (a.appointmentType === 'FOLLOW_UP' && ('customerId' in body || 'vehicleId' in body)) throw new Error('Tekmetric PATCH /api/v1/appointments failed (400): {"type":"ERROR","message":"Customer/vehicle cannot be modified on follow-up appointments","data":null,"details":{}}');
       const change = fromBody(body);
       patches.appt.set(id, { ...(patches.appt.get(id) ?? {}), ...change });
       for (const p of pools.values()) for (const x of p.appts) if (x.id === id) Object.assign(x, change);

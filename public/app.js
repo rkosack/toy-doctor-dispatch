@@ -601,7 +601,7 @@ function openApptEdit(card) {
   dlg.innerHTML = `<form method="dialog" autocomplete="off">
     <h2>Edit appointment</h2>
     <p class="muted" style="margin:0"><b style="color:var(--ink)">${esc(card.customer)}</b>${isRO ? ` · RO ${esc(card.roNumber)}` : ''} · ${esc(card.label)}${card.noShow ? ' · <span style="color:var(--red)">1 h past, not arrived</span>' : ''}</p>
-    <label class="field">Vehicle<select name="vehicle"><option value="${card.vehicleId ?? ''}">${esc(card.vehicle || 'Loading vehicles…')}</option></select></label>
+    <label class="field">Vehicle<select name="vehicle" ${isRO ? 'disabled title="The vehicle is set on the RO in Tekmetric"' : ''}><option value="${card.vehicleId ?? ''}">${esc(card.vehicle || 'Loading vehicles…')}</option></select></label>
     <fieldset><legend>Type of work</legend><div class="kinds">
       ${CAT_KEYS.map((c) => `<label class="kind" style="--bg:var(--c-${c}-bg);--bd:var(--c-${c}-bd);--dot:var(--c-${c}-dot)"><input type="radio" name="category" value="${c}" ${c === cat ? 'checked' : ''} required><i></i><span>${esc(CAT[c])}</span></label>`).join('')}
     </div></fieldset>
@@ -652,7 +652,7 @@ function openApptEdit(card) {
     if (need && !form.pick.value) form.pick.value = '17:00';
   });
   // the customer's vehicles, so a different one can be picked
-  if (card.customerId) {
+  if (card.customerId && !isRO) {
     api(`/api/vehicles?shop=${state.shopId}&customerId=${card.customerId}`).then((r) => {
       if (!r.vehicles.length) return;
       form.vehicle.innerHTML = r.vehicles.map((v) => `<option value="${v.id}" ${v.id === card.vehicleId ? 'selected' : ''}>${esc(v.text)}${v.plate ? ` · ${esc(v.plate)}` : ''}</option>`).join('');
@@ -670,7 +670,7 @@ function openApptEdit(card) {
     if (moved) Object.assign(change, { date, startHour, dropHour });
     if (f.get('category') !== cat) change.category = f.get('category');
     if (String(f.get('concern')).trim() !== String(card.description || card.work).trim()) change.concern = f.get('concern');
-    if (f.get('vehicle') && Number(f.get('vehicle')) !== card.vehicleId) change.vehicleId = Number(f.get('vehicle'));
+    if (!isRO && f.get('vehicle') && Number(f.get('vehicle')) !== card.vehicleId) change.vehicleId = Number(f.get('vehicle'));
     if (rideNow !== ride || (pickHour ?? null) !== (card.pickupHour ?? null)) Object.assign(change, { rideOption: rideNow, pickupHour: pickHour });
     const techId = f.get('tech') ? Number(f.get('tech')) : null;
     const hours = isRO ? card.hours : Number(f.get('hours')) || card.hours;
