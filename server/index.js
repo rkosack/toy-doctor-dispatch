@@ -189,6 +189,10 @@ app.post('/api/techs', auth.require, async (req, res, next) => {
 
 // Recent "[tech]" title tags and what Tekmetric did with them (for troubleshooting)
 app.get('/api/debug/tags', auth.require, (req, res) => res.json({ tags: tagLog }));
+// one appointment exactly as Tekmetric returns it (read only)
+app.get('/api/debug/appointment/:id', auth.require, async (req, res, next) => {
+  try { res.json(await client.getAppointment(Number(req.params.id), Number(req.query.shop))); } catch (e) { res.status(502).json({ error: e.message }); }
+});
 
 // Manage advisors: who gets a column on the Day – Service Advisor view, and in what order (per location).
 app.get('/api/advisors', auth.require, async (req, res, next) => {
