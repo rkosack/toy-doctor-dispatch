@@ -286,20 +286,30 @@ export function taggedTitle(title, techName, employees) {
   if (m && names.has(m[1].trim().toLowerCase())) base = base.slice(m[0].length);
   return (techName ? `[${techName}] ${base}` : base).trim().slice(0, 120) || 'Appointment';
 }
+// the last tag attempts, for checking from the board (/api/debug/tags)
+export const tagLog = [];
+const logTag = (entry) => { tagLog.unshift({ ...entry, at: new Date().toISOString() }); tagLog.length = Math.min(tagLog.length, 40); };
 export async function tagAppointment(ctx, { shopId, appointmentId, techId, employees }) {
+  const { client } = ctx;
+  const r = await tagAppointmentInner(ctx, { shopId, appointmentId, techId, employees });
+  logTag({ appointmentId, techId, ...r });
+  return r;
+}
+async function tagAppointmentInner(ctx, { shopId, appointmentId, techId, employees }) {
   const { client } = ctx;
   try {
     const appt = await client.getAppointment(Number(appointmentId), Number(shopId));
-    if (!appt || appt.deletedDate) return { tagged: false };
+    if (!appt || appt.deletedDate) return { tagged: false, reason: appt ? 'appointment deleted' : 'appointment not found' };
     const tech = techId ? employees.find((e) => e.id === Number(techId)) : null;
     const title = taggedTitle(appt.title, techTag(tech), employees);
-    if (title === appt.title) return { tagged: true, unchanged: true };
+    if (title === appt.title) return { tagged: true, unchanged: true, title };
     const palette = await paletteOrCheck(ctx, Number(shopId));
     await patchAppt(client, appt.id, updateBody(appt, { title }, palette), false);
     client.clearCache();
-    return { tagged: true, title };
+    const after = await client.getAppointment(appt.id, Number(shopId)).catch(() => null);
+    return { tagged: true, title, before: appt.title, readBack: after?.title ?? null };
   } catch (e) {
     console.error(`Could not tag appointment ${appointmentId} with its tech: ${e.message}`);
-    return { tagged: false, error: 'The tech was saved on the board, but the name could not be added to the Tekmetric appointment title.' };
+    return { tagged: false, reason: e.message.slice(0, 300), error: 'The tech was saved on the board, but the name could not be added to the Tekmetric appointment title.' };
   }
 }

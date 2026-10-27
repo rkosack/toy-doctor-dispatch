@@ -15,7 +15,7 @@ import { localDate } from './time.js';
 import { createStore } from './store.js';
 import { assignOpenRO, reassignRO } from './sync.js';
 import { saveAvailability } from './availability.js';
-import { bookAppointment, changeAppointment, customerVehicles, keepNoShow, searchCustomers, tagAppointment, techTag, UserError } from './appointments.js';
+import { bookAppointment, changeAppointment, customerVehicles, keepNoShow, searchCustomers, tagAppointment, tagLog, techTag, UserError } from './appointments.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -186,6 +186,9 @@ app.post('/api/techs', auth.require, async (req, res, next) => {
     res.json({ ok: true, changed: entries.length });
   } catch (e) { next(e); }
 });
+
+// Recent "[tech]" title tags and what Tekmetric did with them (for troubleshooting)
+app.get('/api/debug/tags', auth.require, (req, res) => res.json({ tags: tagLog }));
 
 // Manage advisors: who gets a column on the Day – Service Advisor view, and in what order (per location).
 app.get('/api/advisors', auth.require, async (req, res, next) => {
