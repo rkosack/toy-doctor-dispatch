@@ -15,7 +15,7 @@ import { localDate } from './time.js';
 import { createStore } from './store.js';
 import { assignOpenRO, reassignRO } from './sync.js';
 import { saveAvailability } from './availability.js';
-import { bookAppointment, changeAppointment, customerVehicles, keepNoShow, searchCustomers, UserError } from './appointments.js';
+import { bookAppointment, changeAppointment, customerVehicles, keepNoShow, searchCustomers, tagAppointment, techTag, UserError } from './appointments.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -93,14 +93,18 @@ app.post('/api/assign', auth.require, async (req, res, next) => {
     const techId = req.body?.techId == null ? null : Number(req.body.techId);
     const hours = Math.min(Math.max(Number(req.body?.hours) || 1, 0.1), 24);
     if (!shopId || (!appointmentId && !roId)) return res.status(400).json({ error: 'shopId and appointmentId or roId are required' });
-    const techs = (await client.getEmployees(shopId)).filter((e) => e.canPerformWork && !e.disabled);
+    const employees = await client.getEmployees(shopId);
+    const techs = employees.filter((e) => e.canPerformWork && !e.disabled);
     if (techId != null && !techs.some((t) => t.id === techId)) return res.status(400).json({ error: 'That tech was not found at this shop.' });
+    const tag = (apptId, id) => tagAppointment({ client, store, env: tekEnv }, { shopId, appointmentId: apptId, techId: id, employees });
 
     if (appointmentId) {
+      const prev = (await store.getAssignments(shopId, [Number(appointmentId)])).get(Number(appointmentId));
       // back to Unassigned keeps the estimated hours
-      if (techId == null) await store.setAssignment(shopId, Number(appointmentId), { techId: null, hours, by: req.user.email });
-      else await store.setAssignment(shopId, Number(appointmentId), { techId, hours, by: req.user.email });
-      return res.json({ ok: true });
+      await store.setAssignment(shopId, Number(appointmentId), { techId: techId ?? null, hours, by: req.user.email });
+      // the tech's name on the appointment title in Tekmetric (only when the tech changed)
+      const t = (prev?.techId ?? null) !== (techId ?? null) ? await tag(Number(appointmentId), techId) : {};
+      return res.json({ ok: true, warning: t.error ?? null });
     }
     if (techId == null) return res.status(400).json({ error: 'Pick a tech for this RO.' });
     const ros = (await Promise.all([1, 2].map((st) => client.getRepairOrders(shopId, { repairOrderStatusId: String(st) })))).flat();
@@ -108,8 +112,10 @@ app.post('/api/assign', auth.require, async (req, res, next) => {
     if (!ro) return res.status(404).json({ error: 'That RO is no longer open.' });
     const fromTechId = req.body?.fromTechId == null ? null : Number(req.body.fromTechId);
     // a card already on a tech: move that tech's work on the RO to the new tech (written now)
-    if (fromTechId != null) return res.json({ ok: true, ...(await reassignRO({ client, ro, fromTechId, toTechId: techId })) });
-    res.json({ ok: true, ...(await assignOpenRO({ client, ro, techId })) });
+    const result = fromTechId != null ? await reassignRO({ client, ro, fromTechId, toTechId: techId }) : await assignOpenRO({ client, ro, techId });
+    // the RO's main tech changed: keep the tag on its appointment's title in step
+    const t = ro.appointmentId && (fromTechId == null || result.roTech === 'set') ? await tag(ro.appointmentId, techId) : {};
+    res.json({ ok: true, ...result, warning: t.error ?? null });
   } catch (e) { next(e); }
 });
 
@@ -246,8 +252,9 @@ app.get('/api/vehicles', auth.require, userErrors(async (req, res) => {
 // Book a new appointment in Tekmetric (and optionally assign the tech on the board)
 app.post('/api/appointments', auth.require, userErrors(async (req, res) => {
   const techId = req.body?.techId;
-  if (techId != null && techId !== '' && !(await techList(Number(req.body.shopId))).some((t) => t.id === Number(techId))) throw new UserError('That tech was not found at this shop.');
-  res.json(await bookAppointment(ctx(req), req.body ?? {}));
+  const tech = techId != null && techId !== '' ? (await techList(Number(req.body.shopId))).find((t) => t.id === Number(techId)) : null;
+  if (techId != null && techId !== '' && !tech) throw new UserError('That tech was not found at this shop.');
+  res.json(await bookAppointment(ctx(req), { ...(req.body ?? {}), techName: techTag(tech) }));
 }));
 // Reschedule (date / time / drop-off) or set status (NO_SHOW, CANCELED) on an appointment in Tekmetric
 app.patch('/api/appointments/:id', auth.require, userErrors(async (req, res) => {

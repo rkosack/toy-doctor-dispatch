@@ -151,7 +151,7 @@ export async function bookAppointment(ctx, input) {
   const body = {
     shopId, customerId: Number(input.customerId), vehicleId: Number(input.vehicleId),
     startTime: at(input.date, startHour), endTime: at(input.date, startHour + 0.5),
-    title: String(input.title ?? '').trim().slice(0, 80) || 'Appointment',
+    title: taggedTitle(String(input.title ?? '').trim().slice(0, 80) || 'Appointment', input.techName ?? '', []),
     description: concern, color: CATEGORY_COLOR[category],
     ...(dropHour != null && dropHour < startHour ? { dropoffTime: at(input.date, dropHour) } : {}),
     ...(pickHour != null ? { pickupTime: at(input.date, pickHour) } : {}),
@@ -261,3 +261,33 @@ export async function keepNoShow({ store }, shopId, date, appointmentId) {
 export class UserError extends Error {}
 const quarter = (h) => Math.round(Number(h) * 4) / 4;
 const clamp = (n, lo, hi) => Math.min(Math.max(n, lo), hi);
+
+// ---- the assigned tech, shown in Tekmetric ----
+// Tekmetric's API has no employee field on appointments, so the board puts the tech's name at the front of
+// the appointment title: "[Sam K.] Nguyen – 4Runner". It only touches a leading tag that is a tech's name,
+// so anything else an advisor typed in brackets stays.
+export const techTag = (e) => (e ? `${e.firstName ?? ''} ${(e.lastName ?? '').trim().slice(0, 1)}.`.replace(/\s+/g, ' ').trim() : '');
+export function taggedTitle(title, techName, employees) {
+  const names = new Set(employees.map(techTag).filter(Boolean).map((n) => n.toLowerCase()));
+  let base = String(title ?? '').trim();
+  const m = /^\[([^\]]{1,40})\]\s*/.exec(base);
+  if (m && names.has(m[1].trim().toLowerCase())) base = base.slice(m[0].length);
+  return (techName ? `[${techName}] ${base}` : base).trim().slice(0, 120) || 'Appointment';
+}
+export async function tagAppointment(ctx, { shopId, appointmentId, techId, employees }) {
+  const { client } = ctx;
+  try {
+    const appt = await client.getAppointment(Number(appointmentId), Number(shopId));
+    if (!appt || appt.deletedDate) return { tagged: false };
+    const tech = techId ? employees.find((e) => e.id === Number(techId)) : null;
+    const title = taggedTitle(appt.title, techTag(tech), employees);
+    if (title === appt.title) return { tagged: true, unchanged: true };
+    const palette = await paletteOrCheck(ctx, Number(shopId));
+    await client.patchAppointment(appt.id, updateBody(appt, { title }, palette));
+    client.clearCache();
+    return { tagged: true, title };
+  } catch (e) {
+    console.error(`Could not tag appointment ${appointmentId} with its tech: ${e.message}`);
+    return { tagged: false, error: 'The tech was saved on the board, but the name could not be added to the Tekmetric appointment title.' };
+  }
+}

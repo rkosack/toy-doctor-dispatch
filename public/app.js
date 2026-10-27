@@ -519,7 +519,8 @@ async function assign(card, techId, hours, atHour, isUndo) {
     ? { shopId: state.shopId, appointmentId: card.appointmentId, techId, hours }
     : { shopId: state.shopId, roId: card.roId, techId, fromTechId: from };
   try {
-    await api('/api/assign', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const res = await api('/api/assign', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    if (res.warning) setTimeout(() => toast(res.warning, true), 5200);
     if (atHour != null && techId != null) await plan(card.kind === 'ro' ? `ro-${card.roId}-${techId}` : card.key, atHour);
     state.flash = techId == null ? card.key : card.kind === 'ro' ? `ro-${card.roId}-${techId}` : card.key;
     if (techId == null && card.kind === 'appt') await plan(card.key, null);
